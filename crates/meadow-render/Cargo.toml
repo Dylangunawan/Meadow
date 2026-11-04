@@ -1,5 +1,20 @@
 [package]
 name = "meadow-render"
+description = "GPU 3D viewport and object preview renderer for Meadow (wgpu)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+
+[dependencies]
+meadow-core.workspace = true
+meadow-blocks.workspace = true
+egui-wgpu = "0.37"
+glam.workspace = true
+bytemuck.workspace = true
+rayon.workspace = true
+rustc-hash.workspace = true
+parking_lot.workspace = true
+log.workspace = true
+pollster = "0.4"
+image.workspace = true
+anyhow.workspace = true
