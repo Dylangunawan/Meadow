@@ -250,7 +250,7 @@ impl<'a> GenContext<'a> {
                             }
                         }
                         if let Some(u) = p.upper
-                            && y + 1 <= max_y
+                            && y < max_y
                         {
                             buf.set(lx, y + 1, lz, u);
                         }

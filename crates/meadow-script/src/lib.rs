@@ -240,7 +240,7 @@ fn data_size_name(d: DataSize) -> &'static str {
 }
 
 fn terrain_key(name: &str) -> String {
-    name.to_uppercase().replace([' ', '-'], "_").replace("STAINED_CLAY", "STAINED_CLAY").replace("GRAY", "GREY")
+    name.to_uppercase().replace([' ', '-'], "_").replace("GRAY", "GREY")
 }
 
 #[allow(clippy::too_many_lines)]

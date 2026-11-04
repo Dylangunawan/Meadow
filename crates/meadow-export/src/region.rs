@@ -62,7 +62,7 @@ pub fn read_region(path: &Path) -> Result<Vec<(i32, i32, Compound)>> {
         let comp = data[off + 4];
         let payload = &data[off + 5..(off + 4 + len).min(data.len())];
         let raw = match comp {
-            1 | 2 | 3 => meadow_nbt::decompress_any(payload)?,
+            1..=3 => meadow_nbt::decompress_any(payload)?,
             other => bail!("unsupported chunk compression {other}"),
         };
         let (_, root) = meadow_nbt::from_bytes(&raw)?;

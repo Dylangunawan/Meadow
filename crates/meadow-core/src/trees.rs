@@ -130,7 +130,7 @@ fn swamp(rng: &mut Rng) -> Blocks {
     let vine = s("vine[east=false,north=true,south=false,up=false,west=false]");
     let mut extra = Vec::new();
     for b in &v {
-        if b.3 == leaves && b.1 <= h - 1 && rng.chance(0.15) {
+        if b.3 == leaves && b.1 < h && rng.chance(0.15) {
             for dy in 1..rng.range(2, 4) {
                 extra.push((b.0, b.1 - dy, b.2, vine));
             }
@@ -195,7 +195,7 @@ fn pale_oak(rng: &mut Rng) -> Blocks {
     blob(&mut v, 0, h, 0, 4.0, 2.2, leaves, rng);
     let mut extra = Vec::new();
     for b in &v {
-        if b.3 == leaves && b.1 <= h - 1 && rng.chance(0.12) {
+        if b.3 == leaves && b.1 < h && rng.chance(0.12) {
             extra.push((b.0, b.1 - 1, b.2, moss));
         }
     }

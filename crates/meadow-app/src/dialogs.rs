@@ -109,12 +109,11 @@ pub fn block_picker(ui: &mut egui::Ui, id: impl std::hash::Hash + std::fmt::Debu
         let (r, _) = ui.allocate_exact_size(egui::vec2(14.0, 14.0), egui::Sense::hover());
         ui.painter().rect_filled(r, 2.0, Color32::from_rgb(c[0], c[1], c[2]));
         let resp = ui.add(egui::TextEdit::singleline(&mut text).desired_width(220.0));
-        if resp.lost_focus() || (resp.changed() && text.ends_with(']')) {
-            if let Some(bs) = meadow_blocks::BlockState::parse(&text) {
+        if (resp.lost_focus() || (resp.changed() && text.ends_with(']')))
+            && let Some(bs) = meadow_blocks::BlockState::parse(&text) {
                 *state = StateId::of(&bs);
                 changed = true;
             }
-        }
         ui.menu_button("find", |ui| {
             let qk = egui::Id::unique(("blockq", &id));
             let mut q: String = ui.data_mut(|d| d.get_temp(qk)).unwrap_or_default();
