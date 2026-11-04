@@ -1,0 +1,23 @@
+[package]
+name = "meadow-core"
+description = "World model, terrain, layers, editing operations, masks and custom objects for Meadow"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+meadow-nbt.workspace = true
+meadow-blocks.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+serde = { version = "1", features = ["derive", "rc"] }
+serde_json.workspace = true
+bincode.workspace = true
+zstd.workspace = true
+rayon.workspace = true
+rustc-hash.workspace = true
+parking_lot.workspace = true
+image.workspace = true
+log.workspace = true
+
+[dev-dependencies]
