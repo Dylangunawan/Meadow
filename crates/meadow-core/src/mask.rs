@@ -10,7 +10,7 @@ use crate::dimension::Dimension;
 use crate::layer::LayerId;
 use crate::noise::fbm2;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MaskImage {
     pub width: u32,
     pub height: u32,
@@ -43,7 +43,7 @@ impl MaskImage {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum MaskNode {
     All,
     Image(MaskImage),

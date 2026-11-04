@@ -220,6 +220,8 @@ struct Target {
     samples: u32,
     color: wgpu::Texture,
     color_view: wgpu::TextureView,
+    /// Same texture viewed as plain `Rgba8Unorm` (gamma-space), which is what egui expects.
+    egui_view: wgpu::TextureView,
     msaa_view: Option<wgpu::TextureView>,
     depth_view: wgpu::TextureView,
 }
@@ -434,6 +436,7 @@ impl Scene {
             return;
         }
         let tex = |label: &str, format, samples: u32, usage| {
+            let view_formats: &[wgpu::TextureFormat] = if format == COLOR_FORMAT && samples == 1 { &[wgpu::TextureFormat::Rgba8Unorm] } else { &[] };
             r.device.create_texture(&wgpu::TextureDescriptor {
                 label: Some(label),
                 size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
@@ -442,7 +445,7 @@ impl Scene {
                 dimension: wgpu::TextureDimension::D2,
                 format,
                 usage,
-                view_formats: &[],
+                view_formats,
             })
         };
         let color = tex(
@@ -458,13 +461,15 @@ impl Scene {
             size: (w, h),
             samples,
             color_view: color.create_view(&Default::default()),
+            egui_view: color.create_view(&wgpu::TextureViewDescriptor { format: Some(wgpu::TextureFormat::Rgba8Unorm), ..Default::default() }),
             color,
             msaa_view,
             depth_view: depth.create_view(&Default::default()),
         });
     }
 
-    /// Render into the scene's offscreen texture and return its view (for egui or readback).
+    /// Render into the scene's offscreen texture and return a view of it for egui (`Rgba8Unorm`,
+    /// gamma space). Use `read_pixels` for CPU readback.
     pub fn render(&mut self, r: &Renderer, width: u32, height: u32) -> &wgpu::TextureView {
         let (w, h) = (width.max(1), height.max(1));
         self.ensure_target(r, w, h);
@@ -544,7 +549,7 @@ impl Scene {
         }
         r.queue.submit([enc.finish()]);
         self.stats = stats;
-        &self.target.as_ref().unwrap().color_view
+        &self.target.as_ref().unwrap().egui_view
     }
 
     /// LOD steps of the meshes currently loaded (diagnostics).

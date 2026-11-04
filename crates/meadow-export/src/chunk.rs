@@ -4,13 +4,45 @@ use meadow_blocks::{BlockState, McVersion, StateId, StateInfo};
 use meadow_nbt::{Compound, List, Tag};
 use rustc_hash::FxHashMap;
 
+/// A 16x16x16 section: empty, a single block, or full storage.
+pub enum Section {
+    Empty,
+    Uniform(u32),
+    Full(Box<[u32; 4096]>),
+}
+
+thread_local! {
+    static POOL: std::cell::RefCell<Vec<Box<[u32; 4096]>>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+fn alloc_section(fill: u32) -> Box<[u32; 4096]> {
+    let mut b = POOL.with(|p| p.borrow_mut().pop()).unwrap_or_else(|| Box::new([0u32; 4096]));
+    b.fill(fill);
+    b
+}
+
 pub struct ChunkBuffer {
     pub cx: i32,
     pub cz: i32,
     pub min_section: i32,
-    pub sections: Vec<Option<Box<[u32; 4096]>>>,
+    pub sections: Vec<Section>,
     /// Biome per column (canonical numeric id), 16x16.
     pub biomes: [u8; 256],
+}
+
+impl Drop for ChunkBuffer {
+    fn drop(&mut self) {
+        POOL.with(|p| {
+            let mut p = p.borrow_mut();
+            for s in self.sections.drain(..) {
+                if let Section::Full(b) = s
+                    && p.len() < 512
+                {
+                    p.push(b);
+                }
+            }
+        });
+    }
 }
 
 #[inline]
@@ -23,7 +55,7 @@ impl ChunkBuffer {
         let min_section = min_y.div_euclid(16);
         let max_section = (max_y - 1).div_euclid(16);
         let n = (max_section - min_section + 1) as usize;
-        ChunkBuffer { cx, cz, min_section, sections: (0..n).map(|_| None).collect(), biomes: [1; 256] }
+        ChunkBuffer { cx, cz, min_section, sections: (0..n).map(|_| Section::Empty).collect(), biomes: [1; 256] }
     }
 
     pub fn min_y(&self) -> i32 {
@@ -40,8 +72,23 @@ impl ChunkBuffer {
             return StateId::AIR;
         }
         match &self.sections[s as usize] {
-            Some(sec) => StateId(sec[sidx(x, y, z)]),
-            None => StateId::AIR,
+            Section::Empty => StateId::AIR,
+            Section::Uniform(b) => StateId(*b),
+            Section::Full(sec) => StateId(sec[sidx(x, y, z)]),
+        }
+    }
+
+    #[inline]
+    fn full_mut(&mut self, s: usize) -> &mut [u32; 4096] {
+        let sec = &mut self.sections[s];
+        match sec {
+            Section::Full(_) => {}
+            Section::Empty => *sec = Section::Full(alloc_section(0)),
+            Section::Uniform(u) => *sec = Section::Full(alloc_section(*u)),
+        }
+        match sec {
+            Section::Full(b) => b,
+            _ => unreachable!(),
         }
     }
 
@@ -51,24 +98,67 @@ impl ChunkBuffer {
         if s < 0 || s as usize >= self.sections.len() {
             return;
         }
-        let sec = &mut self.sections[s as usize];
-        if sec.is_none() {
-            if b == StateId::AIR {
-                return;
-            }
-            *sec = Some(Box::new([0u32; 4096]));
+        match &self.sections[s as usize] {
+            Section::Empty if b == StateId::AIR => return,
+            Section::Uniform(u) if *u == b.0 => return,
+            _ => {}
         }
-        sec.as_mut().unwrap()[sidx(x, y, z)] = b.0;
+        self.full_mut(s as usize)[sidx(x, y, z)] = b.0;
+    }
+
+    /// Make every section fully inside [y0, y1) a uniform section of `b` (no allocation).
+    /// Returns the y up to which whole sections were filled.
+    pub fn fill_sections(&mut self, y0: i32, y1: i32, b: StateId) -> i32 {
+        let first = (y0 + 15).div_euclid(16);
+        let last = y1.div_euclid(16); // exclusive
+        for sy in first..last {
+            let s = sy - self.min_section;
+            if s >= 0 && (s as usize) < self.sections.len() {
+                self.sections[s as usize] = Section::Uniform(b.0);
+            }
+        }
+        if last > first { last * 16 } else { y0 }
+    }
+
+    /// Fill y in [y0, y1) of one column with a single state (fast path for deep stone).
+    pub fn fill_column(&mut self, x: i32, z: i32, y0: i32, y1: i32, b: StateId) {
+        if y1 <= y0 || b == StateId::AIR {
+            return;
+        }
+        let col = ((z << 4) | x) as usize;
+        let mut y = y0.max(self.min_y());
+        let end = y1.min(self.max_y());
+        while y < end {
+            let s = ((y >> 4) - self.min_section) as usize;
+            let sec_end = ((y >> 4) + 1) * 16;
+            let stop = sec_end.min(end);
+            if !matches!(self.sections[s], Section::Uniform(u) if u == b.0) {
+                let sec = self.full_mut(s);
+                for ly in (y & 15)..(y & 15) + (stop - y) {
+                    sec[((ly as usize) << 8) | col] = b.0;
+                }
+            }
+            y = stop;
+        }
     }
 
     /// Highest y (exclusive) of any non-air block in the column, or min_y.
     pub fn top(&self, x: i32, z: i32, pred: impl Fn(StateId) -> bool) -> i32 {
         for s in (0..self.sections.len()).rev() {
-            if let Some(sec) = &self.sections[s] {
-                for ly in (0..16).rev() {
-                    let b = StateId(sec[((ly << 8) | (z << 4) | x) as usize]);
-                    if b != StateId::AIR && pred(b) {
-                        return (self.min_section + s as i32) * 16 + ly + 1;
+            let base = (self.min_section + s as i32) * 16;
+            match &self.sections[s] {
+                Section::Empty => {}
+                Section::Uniform(b) => {
+                    if *b != 0 && pred(StateId(*b)) {
+                        return base + 16;
+                    }
+                }
+                Section::Full(sec) => {
+                    for ly in (0..16).rev() {
+                        let b = StateId(sec[((ly << 8) | (z << 4) | x) as usize]);
+                        if b != StateId::AIR && pred(b) {
+                            return base + ly + 1;
+                        }
                     }
                 }
             }
@@ -197,11 +287,39 @@ pub fn to_nbt(c: &ChunkBuffer, pal: &mut PaletteCache, infos: &[StateInfo]) -> C
     for (si, sec) in c.sections.iter().enumerate() {
         let y = c.min_section + si as i32;
         let mut s = Compound::new().with("Y", y as i8);
-        match sec {
-            None => {
+        let uniform = match sec {
+            Section::Empty => Some(0u32),
+            Section::Uniform(b) => Some(*b),
+            Section::Full(blocks) if blocks.iter().all(|b| *b == blocks[0]) => Some(blocks[0]),
+            Section::Full(_) => None,
+        };
+        match (uniform, sec) {
+            (Some(0), _) => {
                 s.insert("block_states", Compound::new().with("palette", List::of(vec![Tag::Compound(Compound::new().with("Name", "minecraft:air"))])));
             }
-            Some(blocks) => {
+            (Some(b), _) => {
+                // Uniform section: single-entry palette, no data, cheap heightmaps.
+                if b != 0 {
+                    let inf = infos.get(b as usize).copied().unwrap_or_else(|| StateId(b).info());
+                    let top = y * 16 + 16;
+                    if !inf.air {
+                        for col in 0..256 {
+                            ws[col] = ws[col].max(top);
+                            if inf.solid || inf.liquid {
+                                mb[col] = mb[col].max(top);
+                                if !inf.leaves {
+                                    mbnl[col] = mbnl[col].max(top);
+                                }
+                            }
+                            if inf.solid {
+                                of[col] = of[col].max(top);
+                            }
+                        }
+                    }
+                }
+                s.insert("block_states", Compound::new().with("palette", List::of(vec![pal.entry(b)])));
+            }
+            (None, Section::Full(blocks)) => {
                 let mut palette: Vec<u32> = Vec::with_capacity(16);
                 let mut lookup: FxHashMap<u32, u32> = FxHashMap::default();
                 let mut indices = vec![0u32; 4096];
@@ -245,6 +363,7 @@ pub fn to_nbt(c: &ChunkBuffer, pal: &mut PaletteCache, infos: &[StateInfo]) -> C
                 }
                 s.insert("block_states", bs);
             }
+            (None, _) => unreachable!(),
         }
         s.insert("biomes", biome_tag.clone());
         sections.push(s);

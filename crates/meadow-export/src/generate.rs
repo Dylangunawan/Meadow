@@ -5,7 +5,7 @@ use meadow_blocks::{BlockState, StateId, StateInfo, common};
 use meadow_core::decorate::{all_placements, plant_at};
 use meadow_core::layer::{LayerDef, LayerId, LayerKind, TreeKind};
 use meadow_core::noise::{hash2, hash3, perlin2, perlin3, unit};
-use meadow_core::terrain::TerrainDef;
+use meadow_core::terrain::{Material, TerrainDef};
 use meadow_core::tile::{TILE_MASK, TILE_SHIFT, local_index};
 use meadow_core::{Dimension, World};
 use rustc_hash::FxHashMap;
@@ -127,6 +127,24 @@ impl<'a> GenContext<'a> {
         let sub = &dim.subsurface;
         let max_y = limits.max_y - 1;
         let mut frost_cols: Vec<(i32, i32)> = Vec::new();
+        // Whole sections of plain deepslate under the entire chunk are stored as uniform sections.
+        if sub.deepslate {
+            let mut deep_top = 0i32;
+            for lz in 0..16 {
+                for lx in 0..16 {
+                    let i = local_index((x0 + lx) & TILE_MASK, (z0 + lz) & TILE_MASK);
+                    let t = world.terrain(tile.terrain[i]);
+                    let sd: i32 = t.strata.iter().map(|s| s.depth as i32).sum::<i32>() + 16;
+                    let top = ((tile.height[i] + 0.5).floor() as i32).clamp(limits.min_y, max_y);
+                    if tile.layer_value(LayerId::VOID, i, 0) != 0 {
+                        deep_top = limits.min_y;
+                    }
+                    deep_top = deep_top.min(top - sd);
+                }
+            }
+            let from = limits.min_y + if sub.bedrock_floor { 16 } else { 0 };
+            buf.fill_sections(from, deep_top.min(0), deepslate);
+        }
 
         for lz in 0..16 {
             for lx in 0..16 {
@@ -144,8 +162,26 @@ impl<'a> GenContext<'a> {
                 let flood_lava = lv(LayerId::LAVA, 0) != 0;
                 let overlay = self.overlays.iter().find(|(id, _, _)| lv(*id, 0) != 0).map(|(_, b, d)| (*b, *d as i32));
 
-                // Solid column.
-                for y in limits.min_y..=top {
+                // Solid column. Plain deepslate/stone below the strata is written with a fast
+                // column fill (most of a 4064-block-tall world).
+                let strata_depth: i32 = terrain.strata.iter().map(|s| s.depth as i32).sum::<i32>().max(overlay.map(|o| o.1).unwrap_or(0));
+                let mut y_start = limits.min_y;
+                if sub.bedrock_floor {
+                    buf.set(lx, limits.min_y, lz, bedrock);
+                    y_start += 1;
+                }
+                let plain_top = (top - strata_depth).min(if sub.deepslate { 0 } else { top - strata_depth });
+                if sub.deepslate && plain_top > y_start {
+                    buf.fill_column(lx, lz, y_start, plain_top, deepslate);
+                    y_start = plain_top;
+                } else if let Material::Block(b) = &sub.material
+                    && !sub.deepslate
+                    && plain_top > y_start
+                {
+                    buf.fill_column(lx, lz, y_start, plain_top, *b);
+                    y_start = plain_top;
+                }
+                for y in y_start..=top {
                     let depth = top - y;
                     let b = if sub.bedrock_floor && y == limits.min_y {
                         bedrock

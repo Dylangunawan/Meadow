@@ -158,6 +158,28 @@ impl World {
         }
     }
 
+    /// Cheap copy for background work (rendering, export): shares tile data, drops undo history.
+    pub fn snapshot(&self) -> World {
+        World {
+            name: self.name.clone(),
+            seed: self.seed,
+            limits: self.limits,
+            dimensions: self.dimensions.iter().map(|d| d.snapshot()).collect(),
+            layers: self.layers.clone(),
+            terrains: self.terrains.clone(),
+            masks: self.masks.clone(),
+            export: self.export.clone(),
+            spawn: self.spawn,
+            path: self.path.clone(),
+            dirty: false,
+        }
+    }
+
+    /// Sum of dimension revisions: changes whenever any tile changes.
+    pub fn content_rev(&self) -> u64 {
+        self.dimensions.iter().map(|d| d.rev()).fold(0u64, |a, b| a.wrapping_add(b))
+    }
+
     pub fn dimension(&self, kind: DimensionKind) -> Option<&Dimension> {
         self.dimensions.iter().find(|d| d.kind == kind)
     }
