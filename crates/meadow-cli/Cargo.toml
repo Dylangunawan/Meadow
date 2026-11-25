@@ -1,0 +1,21 @@
+[package]
+name = "meadow-cli"
+description = "Command line tools for Meadow: run scripts, import, export, render"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "meadow-cli"
+path = "src/main.rs"
+
+[dependencies]
+meadow-blocks.workspace = true
+meadow-core.workspace = true
+meadow-export.workspace = true
+meadow-script.workspace = true
+meadow-render.workspace = true
+anyhow.workspace = true
+image.workspace = true
+glam.workspace = true
+env_logger.workspace = true

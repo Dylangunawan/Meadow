@@ -1,0 +1,32 @@
+[package]
+name = "meadow-app"
+description = "Meadow: a fast Minecraft terrain editor"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "meadow"
+path = "src/main.rs"
+
+[dependencies]
+meadow-nbt.workspace = true
+meadow-blocks.workspace = true
+meadow-core.workspace = true
+meadow-export.workspace = true
+meadow-script.workspace = true
+meadow-render.workspace = true
+eframe = { version = "0.37", default-features = false, features = ["wgpu", "default_fonts", "persistence", "x11", "wayland"] }
+egui-wgpu = "0.37"
+rfd = "0.15"
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+rayon.workspace = true
+parking_lot.workspace = true
+rustc-hash.workspace = true
+image.workspace = true
+glam.workspace = true
+log.workspace = true
+env_logger.workspace = true
+directories = "6"

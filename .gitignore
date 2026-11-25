@@ -1,0 +1,3 @@
+target/
+*.meadow.tmp
+*.mca.tmp

@@ -1,0 +1,19 @@
+[package]
+name = "meadow-script"
+description = "WorldPainter-compatible JavaScript scripting for Meadow (QuickJS)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+meadow-core.workspace = true
+meadow-blocks.workspace = true
+meadow-export.workspace = true
+anyhow.workspace = true
+rquickjs = { version = "0.11", features = ["classes", "properties"] }
+parking_lot.workspace = true
+serde_json.workspace = true
+log.workspace = true
+
+[dev-dependencies]
+image.workspace = true

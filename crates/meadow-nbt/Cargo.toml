@@ -1,0 +1,10 @@
+[package]
+name = "meadow-nbt"
+description = "Fast NBT (Named Binary Tag) reader/writer for Meadow"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+flate2.workspace = true
+thiserror.workspace = true

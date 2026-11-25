@@ -1,0 +1,17 @@
+[package]
+name = "meadow-blocks"
+description = "Block, biome and version registry for Meadow (vanilla 26.1, Conquest Reforged, mod jars)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+meadow-nbt.workspace = true
+parking_lot.workspace = true
+rustc-hash.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+zip.workspace = true
+image.workspace = true
+anyhow.workspace = true
+log.workspace = true
