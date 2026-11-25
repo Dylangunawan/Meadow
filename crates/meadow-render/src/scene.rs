@@ -71,21 +71,42 @@ impl Renderer {
     }
 
     /// Create a renderer without a window (software or hardware adapter), e.g. for screenshots.
+    ///
+    /// Tries the primary backends (Vulkan, Metal, DX12) first and only then OpenGL, whose
+    /// software drivers are the least robust. `WGPU_BACKEND` overrides the choice.
     pub fn headless() -> anyhow::Result<Renderer> {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
-        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: wgpu::PowerPreference::HighPerformance,
-            force_fallback_adapter: false,
-            compatible_surface: None,
-            apply_limit_buckets: false,
-        }))?;
-        log::info!("headless adapter: {:?}", adapter.get_info());
-        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-            label: Some("meadow headless"),
-            required_limits: wgpu::Limits::downlevel_defaults().using_resolution(adapter.limits()),
-            ..Default::default()
-        }))?;
-        Ok(Renderer::new(device, queue))
+        let attempts: Vec<wgpu::Backends> = match wgpu::Backends::from_env() {
+            Some(b) => vec![b],
+            None => vec![wgpu::Backends::PRIMARY, wgpu::Backends::all()],
+        };
+        let mut last_err = None;
+        for backends in attempts {
+            let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
+            desc.backends = backends;
+            let instance = wgpu::Instance::new(desc);
+            let adapter = match pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::HighPerformance,
+                force_fallback_adapter: false,
+                compatible_surface: None,
+                apply_limit_buckets: false,
+            })) {
+                Ok(a) => a,
+                Err(e) => {
+                    last_err = Some(anyhow::Error::from(e));
+                    continue;
+                }
+            };
+            log::info!("headless adapter: {:?}", adapter.get_info());
+            match pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+                label: Some("meadow headless"),
+                required_limits: wgpu::Limits::downlevel_defaults().using_resolution(adapter.limits()),
+                ..Default::default()
+            })) {
+                Ok((device, queue)) => return Ok(Renderer::new(device, queue)),
+                Err(e) => last_err = Some(e.into()),
+            }
+        }
+        Err(last_err.unwrap_or_else(|| anyhow::anyhow!("no GPU adapter found")))
     }
 
     fn pipelines(&self, samples: u32) -> (wgpu::RenderPipeline, wgpu::RenderPipeline) {

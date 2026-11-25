@@ -6,6 +6,22 @@ use meadow_core::{DimensionKind, World};
 
 use crate::{Renderer, Scene};
 
+/// One shared device for all GPU tests, used by one test at a time. Software drivers on GPU-less
+/// CI machines can crash when several devices are created and used concurrently.
+fn gpu() -> Option<(Renderer, parking_lot::MutexGuard<'static, ()>)> {
+    static RENDERER: std::sync::OnceLock<Option<Renderer>> = std::sync::OnceLock::new();
+    static LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+    let guard = LOCK.lock();
+    let r = RENDERER.get_or_init(|| match Renderer::headless() {
+        Ok(r) => Some(r),
+        Err(e) => {
+            eprintln!("no GPU adapter available, skipping GPU tests: {e}");
+            None
+        }
+    });
+    r.clone().map(|r| (r, guard))
+}
+
 fn out_dir() -> std::path::PathBuf {
     let d = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/screenshots");
     std::fs::create_dir_all(&d).unwrap();
@@ -33,13 +49,7 @@ fn sample_world() -> World {
 
 #[test]
 fn headless_render() {
-    let r = match Renderer::headless() {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!("no GPU adapter available, skipping: {e}");
-            return;
-        }
-    };
+    let Some((r, _gpu)) = gpu() else { return };
     let world = Arc::new(sample_world());
     let mut scene = Scene::new(&r);
     scene.settings.msaa = 1;
@@ -64,7 +74,7 @@ fn object_layer_preview_and_lod() {
     use meadow_blocks::StateId;
     use meadow_core::layer::{DataSize, LayerDef, LayerKind, ObjectEntry, ObjectLayerSettings};
     use meadow_core::objects::CustomObject;
-    let Ok(r) = Renderer::headless() else { return };
+    let Some((r, _gpu)) = gpu() else { return };
     // A boulder-with-moss object built in code (stands in for a user's schematic).
     let mut blocks = Vec::new();
     for y in 0..5 {
