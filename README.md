@@ -50,6 +50,8 @@ On Linux you also need the usual windowing libraries (`libxkbcommon`, `libwaylan
 
 Meadow uses WorldPainter's controls, map colours and tool names, so WorldPainter users can start straight away. **Help › Controls** (F1) lists them all; [docs/worldpainter-parity.md](docs/worldpainter-parity.md) tracks what matches so far.
 
+![2D map in WorldPainter's style: hill shading, contours, forest stamps, frost and the 128-block grid](docs/images/editor-2d.jpg)
+
 * **Mouse (2D map):** left-click or drag applies the tool. Right-click (or Alt+click) does the opposite: lower instead of raise, remove a layer, reset terrain to the height-based theme, or set a biome back to automatic. Middle-drag or Space+drag pans.
 * **Wheel:** changes the brush size (Shift: by one block). Ctrl+wheel zooms in powers of two (6.25 %–6400 %) and Alt+wheel rotates the brush.
 * **Keys:** `1`–`0` set the intensity in WorldPainter's ten steps, `R`/`L` rotate the hill-shading light, and `[`/`]` resize the brush. Alt+R/P/L/F/H/A/S pick Spray paint, Pencil, Fill, Flood, Height, Flatten and Smooth.
