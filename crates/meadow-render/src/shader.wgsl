@@ -3,7 +3,7 @@ struct Globals {
     camera: vec4<f32>,
     sun: vec4<f32>,
     fog: vec4<f32>,      // rgb = colour, a = density
-    params: vec4<f32>,   // x = ambient, y = highlight y (brush), z,w unused
+    params: vec4<f32>,   // x = ambient, y = highlight y (brush), z = 1 if the target isn't sRGB, w unused
 };
 
 @group(0) @binding(0) var<uniform> g: Globals;
@@ -62,6 +62,10 @@ fn shade(i: VOut) -> vec4<f32> {
     let dist = distance(i.world, g.camera.xyz);
     let fog = 1.0 - exp(-pow(dist * g.fog.a, 2.0));
     rgb = mix(rgb, srgb_to_linear(g.fog.rgb), clamp(fog, 0.0, 1.0));
+    if g.params.z > 0.5 {
+        // Plain Rgba8Unorm target (no sRGB view support): encode here.
+        rgb = pow(max(rgb, vec3<f32>(0.0)), vec3<f32>(1.0 / 2.2));
+    }
     return vec4<f32>(rgb, i.color.a);
 }
 

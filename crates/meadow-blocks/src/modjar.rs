@@ -52,7 +52,7 @@ pub fn read_zip<R: Read + Seek>(reader: R) -> Result<Vec<BlockInfo>> {
         let Some(path) = rest.strip_prefix("blockstates/").and_then(|p| p.strip_suffix(".json")) else { continue };
         let Ok(json) = serde_json::from_str::<Value>(&texts[&bs]) else { continue };
         let (props, model) = analyse_blockstate(&json);
-        let color = model.and_then(|m| model_color(&m, &texts, &mut zip, &mut tex_cache));
+        let color = model.and_then(|m| model_color(&m, &texts, &mut zip, &mut tex_cache)).map(|c| biome_tint(ns, path, c));
         let non_solid = is_plant_like(path);
         out.push(BlockInfo {
             id: format!("{ns}:{path}"),
@@ -68,6 +68,56 @@ pub fn read_zip<R: Read + Seek>(reader: R) -> Result<Vec<BlockInfo>> {
         });
     }
     Ok(out)
+}
+
+/// Minecraft stores grass, leaves, vines and water textures in grey and tints them by biome at
+/// run time. Apply the default (plains) tint so map colours look like the game.
+pub fn biome_tint(ns: &str, path: &str, c: [u8; 4]) -> [u8; 4] {
+    if ns != "minecraft" {
+        return c;
+    }
+    let tint: u32 = match path {
+        "water" | "bubble_column" | "water_cauldron" => 0x3F76E4,
+        "birch_leaves" => 0x80A755,
+        "spruce_leaves" => 0x619961,
+        "lily_pad" => 0x208030,
+        "oak_leaves" | "jungle_leaves" | "acacia_leaves" | "dark_oak_leaves" | "mangrove_leaves" | "vine" => 0x77AB2F,
+        "grass_block" | "short_grass" | "grass" | "tall_grass" | "fern" | "large_fern" | "sugar_cane" | "potted_fern" => 0x91BD59,
+        _ => return c,
+    };
+    // Only tint grey textures (don't tint twice if a resource pack already coloured them).
+    let (mx, mn) = (c[0].max(c[1]).max(c[2]), c[0].min(c[1]).min(c[2]));
+    if mx - mn > 40 {
+        return c;
+    }
+    let t = [(tint >> 16) as u8, (tint >> 8) as u8, tint as u8];
+    [0, 1, 2].map(|k| (c[k] as u32 * t[k] as u32 / 255) as u8).into_iter().chain([c[3]]).collect::<Vec<u8>>().try_into().unwrap()
+}
+
+/// Find the newest Minecraft release jar installed for the current user.
+pub fn find_minecraft_jar() -> Option<std::path::PathBuf> {
+    let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+    let appdata = std::env::var_os("APPDATA").map(std::path::PathBuf::from);
+    let candidates = [
+        appdata.map(|a| a.join(".minecraft").join("versions")),
+        home.as_ref().map(|h| h.join("Library/Application Support/minecraft/versions")),
+        home.as_ref().map(|h| h.join(".minecraft").join("versions")),
+    ];
+    let mut best: Option<(Vec<u32>, std::path::PathBuf)> = None;
+    for dir in candidates.into_iter().flatten() {
+        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        for e in entries.flatten() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            // Releases only: "1.21.4", "26.1" (no snapshots, pre-releases or modded profiles).
+            let parts: Option<Vec<u32>> = name.split('.').map(|p| p.parse().ok()).collect();
+            let Some(parts) = parts else { continue };
+            let jar = e.path().join(format!("{name}.jar"));
+            if parts.len() >= 2 && jar.is_file() && best.as_ref().is_none_or(|(b, _)| parts > *b) {
+                best = Some((parts, jar));
+            }
+        }
+    }
+    best.map(|(_, p)| p)
 }
 
 /// Merge imported blocks into the global registry. Vanilla blocks keep their generated state
@@ -307,6 +357,17 @@ pub fn blocks_from_tsv(s: &str) -> Vec<BlockInfo> {
 mod tests {
     use super::*;
     use std::io::{Cursor, Write};
+
+    #[test]
+    fn grey_grass_is_tinted_green() {
+        let grey = [150, 150, 150, 255];
+        let g = biome_tint("minecraft", "grass_block", grey);
+        assert!(g[1] > g[0] && g[1] > g[2], "{g:?}");
+        assert_eq!(biome_tint("minecraft", "stone", grey), grey);
+        assert_eq!(biome_tint("conquest", "grass_block", grey), grey);
+        // Already-coloured textures are left alone.
+        assert_eq!(biome_tint("minecraft", "oak_leaves", [40, 120, 30, 255]), [40, 120, 30, 255]);
+    }
 
     #[test]
     fn import_synthetic_jar() {

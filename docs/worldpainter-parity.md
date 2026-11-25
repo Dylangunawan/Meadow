@@ -323,23 +323,30 @@ Meadow has no themes. This is needed for the WorldPainter "raise land and it get
 
 ## 12. Priorities
 
-1. **Controls** (§1, §2): mouse buttons, wheel, number keys for intensity, Alt+letter tools, R/L light,
-   Ctrl zoom keys. Small change, biggest effect on muscle memory.
-2. **Map look** (§8): hill shading formula, flat water, contours on, surface-block colours with speckle,
-   forest stamps, frost, grid with labels, light-cyan background, dashed brush outline, power-of-two zoom,
-   automatic Minecraft jar colours.
-3. **Paint model and tools** (§4, §5, §6): Spray Paint / Pencil / Fill / Height / Raise Mountain / pyramids /
-   eyedropper; brush grid and formulas; filter row; themes (§11).
-4. **Layout** (§3, §7): dock sides and tabs, toolbar, status bar wording, Info panel, terrain grid order,
+Status as of the `claude/worldpainter-parity` branch: ✅ done, ◐ partly done, ☐ not started.
+
+1. ✅ **Controls** (§1, §2): mouse buttons (right / Alt = inverse, middle or Space pans), wheel (radius
+   ×1.1, Shift ±1, Ctrl zoom, Alt rotate), number keys for intensity, Alt+letter tools, R/L light, Ctrl
+   shortcuts (N/O/S/E/Z/Y/G/P/U/H/D/V/3, +/−/0).
+2. ✅ **Map look** (§8): hill shading formula, flat water, contours on, surface-block colours with speckle,
+   forest stamps, frost, transparent cave/resource layers, grid with labels, light-cyan background, dashed
+   brush outline, power-of-two zoom, automatic Minecraft jar colours (with grass/leaf/water tints),
+   Configure view dialog, WorldPainter status bar wording.
+3. ◐ **Paint model and tools** (§4, §5, §6): done: Spray Paint / Pencil / Fill / Flood / Flood Lava /
+   Sponge / Height / Flatten / Smooth / Spawn, the paint selection model, brush grid with WorldPainter's
+   falloffs, rotation, intensity values, nibble-layer paint rules and the default theme (§11) for
+   right-click resets. To do: Raise Mountain, pyramids, eyedropper, Text, the full filter row, bitmap brushes,
+   Apply theme.
+4. ☐ **Layout** (§3, §7): dock sides and tabs, toolbar, Info panel, terrain grid order,
    biome grid, annotations panel, solo checkboxes.
-5. **Dialogs and 3D** (§9, §10): New World, tiles dialog, dimension properties, rotate/shift, global
-   operations, exports, 3D keys and isometric mode.
-6. **Later:** Text tool, selection tools (edit/copy/clear), custom brush folders, image overlays,
+5. ◐ **Dialogs and 3D** (§9, §10): done: 3D view as a Ctrl+3 tab with L/R/+/−/0 and an isometric-style
+   start angle. To do: New World, tiles dialog, dimension properties, rotate/shift, the rest of global
+   operations, export dialog layout, true isometric mode.
+6. ☐ **Later:** Text tool, selection tools (edit/copy/clear), custom brush folders, image overlays,
    ceiling/master dimensions.
 
-## Decisions to confirm
+## Decisions
 
-* **Zoom:** WorldPainter only zooms in powers of two. Match it exactly (recommended), or keep smooth zoom as
-  an option?
-* **3D view:** keep it docked as a tab with Ctrl+3 (recommended), or a separate window like WorldPainter?
-* **Shift + drag to erase** (Meadow today) goes away in favour of right-click / Alt; keep it as an alias?
+* **Zoom:** power-of-two steps only, exactly like WorldPainter.
+* **3D view:** stays docked as a tab, opened with Ctrl+3, with WorldPainter's 3D keys.
+* **Shift + drag to erase** is gone; right-click or Alt+click does the inverse, as in WorldPainter.

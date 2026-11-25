@@ -32,6 +32,13 @@ fn show_scene(ui: &mut egui::Ui, rs: &egui_wgpu::RenderState, r: &Renderer, scen
 
 /// Orbit with left drag, pan with right/middle drag, zoom with the wheel, fly with WASD/QE.
 fn camera_controls(ui: &egui::Ui, resp: &egui::Response, scene: &mut Scene, fly_speed: f32) -> bool {
+    // Handle input once per frame even if egui runs several passes.
+    let frame = ui.ctx().cumulative_frame_nr();
+    let key = egui::Id::unique(("cam_frame", resp.id));
+    if ui.data(|d| d.get_temp::<u64>(key)) == Some(frame) {
+        return false;
+    }
+    ui.data_mut(|d| d.insert_temp(key, frame));
     let mut moved = false;
     if resp.dragged_by(egui::PointerButton::Primary) {
         let d = resp.drag_delta();
@@ -75,6 +82,8 @@ pub struct View3D {
     last_snapshot: Instant,
     framed: bool,
     pub hover: Option<(i32, i32, f32)>,
+    /// The pointer is over the 3D view (keys L/R/+/-/0 go here).
+    pub hovered: bool,
 }
 
 impl View3D {
@@ -88,6 +97,7 @@ impl View3D {
             last_snapshot: Instant::now(),
             framed: false,
             hover: None,
+            hovered: false,
         }
     }
 
@@ -103,6 +113,26 @@ impl View3D {
 
     pub fn refocus(&mut self) {
         self.framed = false;
+    }
+
+    /// WorldPainter 3D view: L / R rotate the view by 90 degrees, looking diagonally like its
+    /// isometric view.
+    pub fn rotate_90(&mut self, clockwise: bool) {
+        use std::f32::consts::{FRAC_PI_2, FRAC_PI_4};
+        let k = ((self.scene.camera.yaw - FRAC_PI_4) / FRAC_PI_2).round() + if clockwise { -1.0 } else { 1.0 };
+        self.scene.camera.yaw = FRAC_PI_4 + k * FRAC_PI_2;
+    }
+
+    /// + / - zoom.
+    pub fn zoom_step(&mut self, inward: bool) {
+        self.scene.camera.zoom(if inward { 3.0 } else { -3.0 });
+    }
+
+    /// 0: reset to the whole-world view.
+    pub fn reset_view(&mut self) {
+        self.scene.frame_world();
+        self.scene.camera.yaw = std::f32::consts::FRAC_PI_4;
+        self.scene.camera.pitch = 0.6;
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -128,6 +158,7 @@ impl View3D {
         let size = ui.available_size();
         let resp = show_scene(ui, rs, r, &mut self.scene, &mut self.tex, size);
         let moved = camera_controls(ui, &resp, &mut self.scene, settings.fly_speed);
+        self.hovered = resp.hovered();
         self.hover = None;
         if let Some(p) = resp.hover_pos() {
             let rect = resp.rect;

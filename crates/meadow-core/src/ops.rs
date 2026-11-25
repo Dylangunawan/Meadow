@@ -12,8 +12,9 @@ use serde::{Deserialize, Serialize};
 use crate::dimension::Dimension;
 use crate::layer::LayerId;
 use crate::mask::CustomMask;
-use crate::noise::{fbm2, hash2, unit};
+use crate::noise::{fbm2, hash2, hash3, unit};
 use crate::terrain::TerrainId;
+use crate::theme::Theme;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BrushShape {
@@ -21,12 +22,53 @@ pub enum BrushShape {
     Square,
 }
 
+/// Brush falloff profiles, as in WorldPainter's brush palette.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Falloff {
     Constant,
     Linear,
-    Smooth,
-    Sharp,
+    /// WorldPainter's default ("Sine"): cos(d*pi)/2 + 0.5.
+    #[serde(alias = "Smooth")]
+    Sine,
+    Plateau,
+    #[serde(alias = "Sharp")]
+    Spike,
+    Dome,
+}
+
+impl Falloff {
+    pub const ALL: [Falloff; 6] = [Falloff::Spike, Falloff::Linear, Falloff::Sine, Falloff::Plateau, Falloff::Dome, Falloff::Constant];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Falloff::Constant => "Constant",
+            Falloff::Linear => "Linear",
+            Falloff::Sine => "Sine",
+            Falloff::Plateau => "Plateau",
+            Falloff::Spike => "Spike",
+            Falloff::Dome => "Dome",
+        }
+    }
+
+    /// Strength at normalised distance `d` (0 = centre, 1 = edge).
+    #[inline]
+    pub fn at(self, d: f32) -> f32 {
+        use std::f32::consts::PI;
+        match self {
+            Falloff::Constant => 1.0,
+            Falloff::Linear => 1.0 - d,
+            Falloff::Sine => (d * PI).cos() / 2.0 + 0.5,
+            Falloff::Plateau => {
+                if d < 0.5 {
+                    1.0
+                } else {
+                    ((d - 0.5) * 2.0 * PI).cos() / 2.0 + 0.5
+                }
+            }
+            Falloff::Spike => (1.0 - d) * (1.0 - d),
+            Falloff::Dome => (1.0 - d * d).max(0.0).sqrt(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -38,19 +80,34 @@ pub struct Brush {
     pub falloff: Falloff,
     /// 0 = smooth edges, 1 = very noisy edges/strength.
     pub roughness: f32,
+    /// Rotation in degrees (affects square brushes).
+    #[serde(default)]
+    pub rotation: f32,
 }
 
 impl Default for Brush {
     fn default() -> Self {
-        Brush { radius: 25.0, intensity: 0.5, shape: BrushShape::Circle, falloff: Falloff::Smooth, roughness: 0.0 }
+        Brush { radius: 50.0, intensity: 0.5, shape: BrushShape::Circle, falloff: Falloff::Sine, roughness: 0.0, rotation: 0.0 }
     }
 }
 
 impl Brush {
-    /// Strength in [0, 1] at offset (dx, dy) from the centre.
+    /// Strength in [0, 1] at offset (dx, dy) from the centre, including intensity.
     #[inline]
     pub fn strength(&self, dx: f32, dy: f32, wx: i32, wy: i32) -> f32 {
+        self.falloff_strength(dx, dy, wx, wy) * self.intensity
+    }
+
+    /// Strength without intensity ("full strength" in WorldPainter terms).
+    #[inline]
+    pub fn falloff_strength(&self, dx: f32, dy: f32, wx: i32, wy: i32) -> f32 {
         let r = self.radius.max(0.5);
+        let (dx, dy) = if self.rotation != 0.0 && self.shape == BrushShape::Square {
+            let (s, c) = (-self.rotation.to_radians()).sin_cos();
+            (dx * c - dy * s, dx * s + dy * c)
+        } else {
+            (dx, dy)
+        };
         let d = match self.shape {
             BrushShape::Circle => (dx * dx + dy * dy).sqrt() / r,
             BrushShape::Square => dx.abs().max(dy.abs()) / r,
@@ -58,23 +115,32 @@ impl Brush {
         if d > 1.0 {
             return 0.0;
         }
-        let f = match self.falloff {
-            Falloff::Constant => 1.0,
-            Falloff::Linear => 1.0 - d,
-            Falloff::Smooth => {
-                let t = 1.0 - d;
-                t * t * (3.0 - 2.0 * t)
-            }
-            Falloff::Sharp => (1.0 - d) * (1.0 - d),
-        };
-        let f = if self.roughness > 0.0 {
+        let f = self.falloff.at(d);
+        if self.roughness > 0.0 {
             let n = (fbm2(0x9e37, wx as f32 / 8.0, wy as f32 / 8.0, 3) + 1.0) * 0.5;
             (f * (1.0 - self.roughness + self.roughness * n * 2.0)).clamp(0.0, 1.0)
         } else {
             f
-        };
-        f * self.intensity
+        }
     }
+}
+
+/// Something that can be painted with Spray Paint, Pencil or Fill (WorldPainter's "paint").
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Paint {
+    Terrain(TerrainId),
+    /// On/off or 0..15 layer.
+    Layer { layer: LayerId, bits: bool, default: u8 },
+    /// A layer whose values are categories (biomes, annotation colours).
+    Discrete { layer: LayerId, value: u8, default: u8 },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PaintMode {
+    /// Soft, random application weighted by brush strength (WorldPainter's Spray Paint).
+    Spray,
+    /// Hard-edged application (WorldPainter's Pencil).
+    Pencil,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -99,6 +165,12 @@ pub enum Tool {
     Sponge,
     PaintMask(LayerId),
     EraseMask(LayerId),
+    /// Apply (or with `remove`, take away) a paint.
+    Paint { paint: Paint, mode: PaintMode, remove: bool },
+    /// Reset terrain (and frost) to the dimension's theme.
+    ResetTerrain,
+    /// Reset water to the given level and remove lava (Sponge's inverse).
+    ResetWater(i32),
 }
 
 impl Tool {
@@ -119,6 +191,10 @@ impl Tool {
             Tool::Sponge => "Sponge",
             Tool::PaintMask(_) => "Paint mask",
             Tool::EraseMask(_) => "Erase mask",
+            Tool::Paint { mode: PaintMode::Spray, .. } => "Spray paint",
+            Tool::Paint { mode: PaintMode::Pencil, .. } => "Pencil",
+            Tool::ResetTerrain => "Reset terrain",
+            Tool::ResetWater(_) => "Reset water",
         }
     }
     /// Continuous tools apply every frame while the mouse is held; others once per column.
@@ -131,6 +207,8 @@ impl Tool {
 #[derive(Debug, Clone, Default)]
 pub struct Stroke {
     pub flatten_level: Option<f32>,
+    /// Incremented on every application, so spray paint keeps adding coverage while held.
+    pub tick: u64,
 }
 
 /// Apply a tool at (cx, cy). `dt` is the time step in seconds for continuous tools (use 1.0 for
@@ -192,6 +270,10 @@ pub fn apply(dim: &mut Dimension, tool: &Tool, brush: &Brush, cx: f32, cy: f32, 
     }
     let (min_y, max_y) = (dim.limits.min_y as f32, (dim.limits.max_y - 1) as f32);
     let rate = 20.0 * dt; // blocks per second at full strength
+    stroke.tick = stroke.tick.wrapping_add(1);
+    let tick = stroke.tick;
+    let theme = dim.theme();
+    let intensity = brush.intensity.max(0.01);
 
     // Write phase.
     dim.for_each_in_rect_mut(x0, y0, x1, y1, |t, wx, wy, i| {
@@ -270,8 +352,178 @@ pub fn apply(dim: &mut Dimension, tool: &Tool, brush: &Brush, cx: f32, cy: f32, 
                 let v = (d.get(i) as f32 - s * 255.0 * dt * 4.0).max(0.0);
                 d.set(i, v as u8);
             }
+            Tool::ResetTerrain => theme.apply(t, i),
+            Tool::ResetWater(level) => {
+                t.water[i] = *level as i16;
+                if t.has_layer(LayerId::LAVA) {
+                    t.layer_mut(LayerId::LAVA, true, 0).set(i, 0);
+                }
+            }
+            Tool::Paint { paint, mode, remove } => {
+                // WorldPainter: hit if strength > 0.95 or a random draw < strength (fresh draw
+                // every tick, so holding the button keeps adding coverage).
+                let hit = match mode {
+                    PaintMode::Pencil => true,
+                    PaintMode::Spray => s > 0.95 || unit(hash3(0x5b7a ^ tick, wx, wy, 0)) < s,
+                };
+                apply_paint(t, i, paint, *mode, *remove, s, s / intensity, hit, &theme);
+            }
         }
     });
+}
+
+/// Apply one paint to one column. `s` includes intensity, `full` does not.
+#[allow(clippy::too_many_arguments)]
+fn apply_paint(t: &mut crate::tile::Tile, i: usize, paint: &Paint, mode: PaintMode, remove: bool, s: f32, full: f32, hit: bool, theme: &Theme) {
+    match *paint {
+        Paint::Terrain(id) => {
+            if hit {
+                if remove {
+                    theme.apply(t, i);
+                } else {
+                    t.terrain[i] = id;
+                }
+            }
+        }
+        Paint::Layer { layer, bits: true, default } => {
+            if hit && (!remove || t.has_layer(layer)) {
+                t.layer_mut(layer, true, default).set(i, (!remove) as u8);
+            }
+        }
+        Paint::Layer { layer, bits: false, default } => {
+            let s = if mode == PaintMode::Pencil { s.max(0.0) } else { s };
+            if remove {
+                if t.has_layer(layer) {
+                    let d = t.layer_mut(layer, false, default);
+                    let target = (14.0 - (full.min(1.0) * 14.0).round()).max(0.0) as u8;
+                    if target < d.get(i) {
+                        d.set(i, target);
+                    }
+                }
+            } else {
+                let target = (1.0 + (s.min(1.0) * 14.0).round()) as u8;
+                let d = t.layer_mut(layer, false, default);
+                if target > d.get(i) {
+                    d.set(i, target);
+                }
+            }
+        }
+        Paint::Discrete { layer, value, default } => {
+            if hit {
+                if remove {
+                    if t.has_layer(layer) {
+                        t.layer_mut(layer, false, default).set(i, default);
+                    }
+                } else {
+                    t.layer_mut(layer, false, default).set(i, value);
+                }
+            }
+        }
+    }
+}
+
+/// The value of a paint's channel at a column (used by Fill to find the region to fill).
+fn paint_key(dim: &Dimension, paint: &Paint, x: i32, y: i32) -> Option<u32> {
+    let _ = dim.height(x, y)?;
+    Some(match *paint {
+        Paint::Terrain(_) => dim.terrain(x, y)? as u32,
+        Paint::Layer { layer, default, .. } | Paint::Discrete { layer, default, .. } => dim.layer_value(layer, default, x, y) as u32,
+    })
+}
+
+/// WorldPainter's Fill tool: flood fill the connected area that currently has the same value as
+/// the clicked column (same terrain, same layer value, same biome) with the paint, or remove the
+/// paint from it. Returns the number of columns changed.
+pub fn fill_paint(dim: &mut Dimension, x: i32, y: i32, paint: &Paint, remove: bool, max_columns: usize) -> usize {
+    let Some(key) = paint_key(dim, paint, x, y) else { return 0 };
+    let mut seen: FxHashSet<(i32, i32)> = FxHashSet::default();
+    let mut queue = VecDeque::new();
+    let mut cols = Vec::new();
+    queue.push_back((x, y));
+    while let Some((cx, cy)) = queue.pop_front() {
+        if cols.len() >= max_columns || !seen.insert((cx, cy)) {
+            continue;
+        }
+        if paint_key(dim, paint, cx, cy) != Some(key) {
+            continue;
+        }
+        cols.push((cx, cy));
+        for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+            queue.push_back((cx + dx, cy + dy));
+        }
+    }
+    let theme = dim.theme();
+    for &(cx, cy) in &cols {
+        let (tx, ty) = (cx >> crate::tile::TILE_SHIFT, cy >> crate::tile::TILE_SHIFT);
+        let i = crate::tile::local_index(cx & crate::tile::TILE_MASK, cy & crate::tile::TILE_MASK);
+        if let Some(t) = dim.tile_mut(tx, ty) {
+            apply_paint(t, i, paint, PaintMode::Pencil, remove, 1.0, 1.0, true, &theme);
+        }
+    }
+    cols.len()
+}
+
+/// WorldPainter's Flood tool: raise (or with `lower`, drop) the water level by one block over
+/// the connected area around (x, y). With `lava`, floods with lava (or converts water to lava).
+/// Returns the number of columns changed.
+pub fn flood_step(dim: &mut Dimension, x: i32, y: i32, lower: bool, lava: bool, max_columns: usize) -> usize {
+    let Some(terrain) = dim.int_height(x, y) else { return 0 };
+    let water = dim.water(x, y).unwrap_or(i32::MIN);
+    let fluid = water > terrain;
+    if lower && !fluid {
+        return 0;
+    }
+    let is_lava = |d: &Dimension, x: i32, y: i32| d.layer_value(LayerId::LAVA, 0, x, y) != 0;
+    // Convert water <-> lava in place when clicking a fluid of the other kind.
+    if fluid && !lower && lava != is_lava(dim, x, y) {
+        let mut seen: FxHashSet<(i32, i32)> = FxHashSet::default();
+        let mut queue = VecDeque::from([(x, y)]);
+        let mut cols = Vec::new();
+        while let Some((cx, cy)) = queue.pop_front() {
+            if cols.len() >= max_columns || !seen.insert((cx, cy)) {
+                continue;
+            }
+            let (Some(h), Some(w)) = (dim.int_height(cx, cy), dim.water(cx, cy)) else { continue };
+            if w <= h || is_lava(dim, cx, cy) == lava {
+                continue;
+            }
+            cols.push((cx, cy));
+            for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                queue.push_back((cx + dx, cy + dy));
+            }
+        }
+        for (cx, cy) in &cols {
+            dim.set_layer_value(LayerId::LAVA, true, 0, *cx, *cy, lava as u8);
+        }
+        return cols.len();
+    }
+    let height = terrain.max(water);
+    if (lower && height <= dim.limits.min_y) || (!lower && height >= dim.limits.max_y - 1) {
+        return 0;
+    }
+    let target = if lower { height - 1 } else { height + 1 };
+    let mut seen: FxHashSet<(i32, i32)> = FxHashSet::default();
+    let mut queue = VecDeque::from([(x, y)]);
+    let mut cols = Vec::new();
+    while let Some((cx, cy)) = queue.pop_front() {
+        if cols.len() >= max_columns || !seen.insert((cx, cy)) {
+            continue;
+        }
+        let (Some(h), Some(w)) = (dim.int_height(cx, cy), dim.water(cx, cy)) else { continue };
+        let boundary = if lower { w <= h || w <= target } else { h >= target || w >= target };
+        if boundary {
+            continue;
+        }
+        cols.push((cx, cy));
+        for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+            queue.push_back((cx + dx, cy + dy));
+        }
+    }
+    for (cx, cy) in &cols {
+        dim.set_water(*cx, *cy, target);
+        dim.set_layer_value(LayerId::LAVA, true, 0, *cx, *cy, lava as u8);
+    }
+    cols.len()
 }
 
 fn dim_min_water(min_y: f32) -> i32 {
@@ -420,6 +672,66 @@ mod tests {
         assert_eq!(n, 100);
         assert_eq!(d.water(-25, -25), Some(58));
         assert!(d.is_underwater(-25, -25));
+    }
+
+    #[test]
+    fn worldpainter_flood_and_fill() {
+        let mut d = dim();
+        for y in -20..-10 {
+            for x in -20..-10 {
+                d.set_height(x, y, 50.0);
+            }
+        }
+        // Water starts at 62 everywhere; lower it in the basin first.
+        for y in -20..-10 {
+            for x in -20..-10 {
+                d.set_water(x, y, 40);
+            }
+        }
+        // Each click raises the basin's water by one block.
+        assert_eq!(flood_step(&mut d, -15, -15, false, false, 100_000), 100);
+        assert_eq!(d.water(-15, -15), Some(51));
+        assert_eq!(flood_step(&mut d, -15, -15, false, false, 100_000), 100);
+        assert_eq!(d.water(-12, -12), Some(52));
+        // Right-click lowers it again.
+        flood_step(&mut d, -15, -15, true, false, 100_000);
+        assert_eq!(d.water(-15, -15), Some(51));
+        // Lava tool converts the water to lava.
+        flood_step(&mut d, -15, -15, false, true, 100_000);
+        assert_eq!(d.layer_value(LayerId::LAVA, 0, -15, -15), 1);
+        // Fill paints the connected area of the same terrain.
+        d.set_terrain(5, 5, 7);
+        let n = fill_paint(&mut d, 0, 0, &Paint::Terrain(28), false, 1_000_000);
+        assert_eq!(n, 256 * 256 - 1);
+        assert_eq!(d.terrain(5, 5), Some(7));
+        assert_eq!(d.terrain(0, 0), Some(28));
+        // Right-click fill resets terrain to the theme (grass at height 64).
+        fill_paint(&mut d, 0, 0, &Paint::Terrain(28), true, 1_000_000);
+        assert_eq!(d.terrain(30, 30), Some(crate::terrain::ids::GRASS));
+    }
+
+    #[test]
+    fn spray_paint_builds_up_and_layers_follow_worldpainter_values() {
+        let mut d = dim();
+        let b = Brush { radius: 10.0, intensity: 0.3, falloff: Falloff::Constant, ..Default::default() };
+        let mut s = Stroke::default();
+        let tool = Tool::Paint { paint: Paint::Terrain(28), mode: PaintMode::Spray, remove: false };
+        apply(&mut d, &tool, &b, 0.0, 0.0, 1.0, None, &mut s);
+        let count = |d: &Dimension| (-8..8).flat_map(|y| (-8..8).map(move |x| (x, y))).filter(|(x, y)| d.terrain(*x, *y) == Some(28)).count();
+        let first = count(&d);
+        for _ in 0..20 {
+            apply(&mut d, &tool, &b, 0.0, 0.0, 1.0, None, &mut s);
+        }
+        assert!(first > 30 && first < 140, "{first}");
+        assert!(count(&d) > 240, "spray keeps adding coverage");
+        // Nibble layer: 1 + round(strength * 14)
+        let layer = Paint::Layer { layer: LayerId::DECIDUOUS, bits: false, default: 0 };
+        apply(&mut d, &Tool::Paint { paint: layer, mode: PaintMode::Spray, remove: false }, &b, 0.0, 0.0, 1.0, None, &mut s);
+        assert_eq!(d.layer_value(LayerId::DECIDUOUS, 0, 0, 0), 5);
+        // Square brushes rotate.
+        let sq = Brush { radius: 10.0, shape: BrushShape::Square, rotation: 45.0, falloff: Falloff::Constant, ..Default::default() };
+        assert_eq!(sq.falloff_strength(9.0, 9.0, 0, 0), 0.0);
+        assert_eq!(sq.falloff_strength(13.0, 0.0, 0, 0), 1.0);
     }
 
     #[test]

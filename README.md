@@ -48,8 +48,14 @@ On Linux you also need the usual windowing libraries (`libxkbcommon`, `libwaylan
 
 ## Using the editor
 
-* **2D map:** left-drag uses the current tool and Shift+drag erases or inverts it. Right/middle-drag or Space+drag pans, and the wheel zooms. `[` and `]` change the brush size, `1`–`9` pick tools, `Tab` cycles 2D / 3D / split and `F` frames the world.
-* **3D view:** drag to orbit, right-drag to pan, wheel to zoom, WASD/QE to fly (Shift for speed), and double-click to focus a point.
+Meadow uses WorldPainter's controls, map colours and tool names, so WorldPainter users can start straight away. **Help › Controls** (F1) lists them all; [docs/worldpainter-parity.md](docs/worldpainter-parity.md) tracks what matches so far.
+
+* **Mouse (2D map):** left-click or drag applies the tool. Right-click (or Alt+click) does the opposite: lower instead of raise, remove a layer, reset terrain to the height-based theme, or set a biome back to automatic. Middle-drag or Space+drag pans.
+* **Wheel:** changes the brush size (Shift: by one block). Ctrl+wheel zooms in powers of two (6.25 %–6400 %) and Alt+wheel rotates the brush.
+* **Keys:** `1`–`0` set the intensity in WorldPainter's ten steps, `R`/`L` rotate the hill-shading light, and `[`/`]` resize the brush. Alt+R/P/L/F/H/A/S pick Spray paint, Pencil, Fill, Flood, Height, Flatten and Smooth.
+* **Ctrl shortcuts:** Ctrl+N/O/S/E for New, Open, Save and Export, and Ctrl+Z/Y for undo/redo. Ctrl+G opens Global operations and Ctrl+P the world properties. Ctrl+U/H/D switch dimension, Ctrl+V configures the view, Ctrl+3 opens the 3D view and Ctrl+`+`/`−`/`0` zoom.
+* **Map look:** WorldPainter's renderer, with hill shading from the chosen light direction, contour lines every 10 blocks, flat water and a 128-block grid with coordinates. On first start Meadow reads block colours from your installed Minecraft (View › Change colour scheme to redo it).
+* **3D view** (Ctrl+3): `L`/`R` rotate 90°, `+`/`−` zoom and `0` resets the view. Drag to orbit, right-drag to pan, WASD/QE to fly (Shift for speed), and double-click to focus a point. `Tab` cycles 2D / 3D / split.
 * **Layers:** click a layer to paint it. **+ New layer** creates custom objects (load `.schem`, `.schematic`, `.nbt` or `.bo2`), plants, ground cover or terrain overlay layers. **edit** opens the layer editor with its live 3D preview.
 * **Custom masks:** build masks in the *Custom masks* panel or from an image, then choose one as the brush **Filter**, or use **Tools › Fill / clear through mask**.
 * **Custom terrain:** **+ Custom terrain** in the Terrain panel builds a terrain from any blocks (vanilla, Conquest or imported) as single blocks, random mixes, noise patches or bands, stacked in strata.
@@ -110,7 +116,7 @@ Scripts that only use `.meadow` worlds and layers by name work as-is.
 
 ## Status
 
-Tested here: the unit and integration tests (`cargo test --workspace`); exports read back and decoded; headless 3D renders; and the editor UI driven under a virtual display with software Vulkan. **Not yet tested:** opening exported worlds in a real Minecraft client or server, and running on Windows or macOS. Please report anything that doesn't load.
+Tested here: the unit and integration tests (`cargo test --workspace`); exports read back and decoded; headless 3D renders; and the editor UI driven under a virtual display with software Vulkan and OpenGL. **Not yet tested:** opening exported worlds in a real Minecraft client or server, and running on Windows or macOS. Please report anything that doesn't load.
 
 Known gaps compared with WorldPainter:
 * opening `.world` files;

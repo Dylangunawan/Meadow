@@ -32,6 +32,10 @@ struct Globals {
 pub struct Renderer {
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
+    /// Format the scene renders into. `COLOR_FORMAT` (sRGB, with a plain `Rgba8Unorm` view for
+    /// egui) where the device can reinterpret formats; otherwise (e.g. some OpenGL drivers)
+    /// plain `Rgba8Unorm`, with the shader doing the sRGB encoding itself.
+    pub color_format: wgpu::TextureFormat,
     inner: Arc<parking_lot::Mutex<Pipelines>>,
     layout: Arc<wgpu::BindGroupLayout>,
 }
@@ -43,7 +47,12 @@ struct Pipelines {
 }
 
 impl Renderer {
-    pub fn new(device: wgpu::Device, queue: wgpu::Queue) -> Renderer {
+    pub fn new(adapter: &wgpu::Adapter, device: wgpu::Device, queue: wgpu::Queue) -> Renderer {
+        let view_formats = adapter.get_downlevel_capabilities().flags.contains(wgpu::DownlevelFlags::VIEW_FORMATS);
+        let color_format = if view_formats { COLOR_FORMAT } else { wgpu::TextureFormat::Rgba8Unorm };
+        if !view_formats {
+            log::info!("3D view: device can't reinterpret texture formats; encoding sRGB in the shader");
+        }
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("meadow terrain"),
             source: wgpu::ShaderSource::Wgsl(include_str!("shader.wgsl").into()),
@@ -65,6 +74,7 @@ impl Renderer {
         Renderer {
             device,
             queue,
+            color_format,
             inner: Arc::new(parking_lot::Mutex::new(Pipelines { shader, pipeline_layout, by_samples: FxHashMap::default() })),
             layout: Arc::new(layout),
         }
@@ -102,7 +112,7 @@ impl Renderer {
                 required_limits: wgpu::Limits::downlevel_defaults().using_resolution(adapter.limits()),
                 ..Default::default()
             })) {
-                Ok((device, queue)) => return Ok(Renderer::new(device, queue)),
+                Ok((device, queue)) => return Ok(Renderer::new(&adapter, device, queue)),
                 Err(e) => last_err = Some(e.into()),
             }
         }
@@ -152,7 +162,7 @@ impl Renderer {
                     module: &p.shader,
                     entry_point: Some(fs),
                     compilation_options: Default::default(),
-                    targets: &[Some(wgpu::ColorTargetState { format: COLOR_FORMAT, blend, write_mask: wgpu::ColorWrites::ALL })],
+                    targets: &[Some(wgpu::ColorTargetState { format: self.color_format, blend, write_mask: wgpu::ColorWrites::ALL })],
                 }),
                 multiview_mask: None,
                 cache: None,
@@ -456,6 +466,7 @@ impl Scene {
         {
             return;
         }
+        let color_format = r.color_format;
         let tex = |label: &str, format, samples: u32, usage| {
             let view_formats: &[wgpu::TextureFormat] = if format == COLOR_FORMAT && samples == 1 { &[wgpu::TextureFormat::Rgba8Unorm] } else { &[] };
             r.device.create_texture(&wgpu::TextureDescriptor {
@@ -471,12 +482,12 @@ impl Scene {
         };
         let color = tex(
             "scene color",
-            COLOR_FORMAT,
+            color_format,
             1,
             wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_SRC,
         );
         let msaa_view = (samples > 1)
-            .then(|| tex("scene msaa", COLOR_FORMAT, samples, wgpu::TextureUsages::RENDER_ATTACHMENT).create_view(&Default::default()));
+            .then(|| tex("scene msaa", color_format, samples, wgpu::TextureUsages::RENDER_ATTACHMENT).create_view(&Default::default()));
         let depth = tex("scene depth", DEPTH_FORMAT, samples, wgpu::TextureUsages::RENDER_ATTACHMENT);
         self.target = Some(Target {
             size: (w, h),
@@ -505,7 +516,7 @@ impl Scene {
             camera: [eye.x, eye.y, eye.z, 1.0],
             sun: [s.sun[0], s.sun[1], s.sun[2], 0.0],
             fog: [s.sky[0], s.sky[1], s.sky[2], fog_density],
-            params: [s.ambient, 0.0, 0.0, 0.0],
+            params: [s.ambient, 0.0, (r.color_format != COLOR_FORMAT) as u32 as f32, 0.0],
         };
         r.queue.write_buffer(&self.globals, 0, bytemuck::bytes_of(&globals));
         let samples = self.target.as_ref().unwrap().samples;

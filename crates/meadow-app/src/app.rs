@@ -3,16 +3,16 @@
 use std::path::PathBuf;
 use std::time::Instant;
 
-use eframe::egui::{self, Key, KeyboardShortcut, Modifiers};
-use meadow_core::layer::{LayerDef, LayerId};
-use meadow_core::ops::{self, Brush, BrushShape, Stroke, Tool};
+use eframe::egui::{self, Key, KeyboardShortcut, Modifiers, RichText};
+use meadow_core::layer::{LayerDef, LayerId, LayerKind};
+use meadow_core::ops::{self, Brush, Paint, PaintMode, Stroke, Tool};
 use meadow_core::world::NewWorld;
 use meadow_core::{DimensionKind, World};
 use meadow_render::Renderer;
 
 use crate::dialogs::Dialogs;
 use crate::jobs::{ExportJob, JarJob, ScriptJob};
-use crate::map2d::{Map2D, MapAction, MapStyle};
+use crate::map2d::{Map2D, MapAction, MapStyle, MapUi};
 use crate::settings::{Dock, PanelKind, Settings};
 use crate::view3d::{ObjectPreview, View3D};
 
@@ -25,47 +25,84 @@ pub enum ViewMode {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolChoice {
-    Raise,
-    Lower,
-    Smooth,
+    /// No tool (Esc): the map only navigates.
+    None,
+    // WorldPainter's tools
+    SprayPaint,
+    Pencil,
+    Fill,
+    Flood,
+    FloodLava,
+    Sponge,
+    Height,
     Flatten,
+    Smooth,
+    Spawn,
+    // Meadow extras
     SetHeight,
     Roughen,
     Terrace,
-    Terrain,
-    Layer,
-    EraseLayer,
-    Biome,
     WaterLevel,
-    Sponge,
-    Flood,
     Mask,
     Tiles,
-    Spawn,
+}
+
+/// One entry of the tool palette: tool, label, tooltip, Alt+key shortcut.
+pub struct ToolInfo {
+    pub tool: ToolChoice,
+    pub name: &'static str,
+    pub tip: &'static str,
+    pub key: Option<Key>,
+}
+
+const fn ti(tool: ToolChoice, name: &'static str, tip: &'static str, key: Option<Key>) -> ToolInfo {
+    ToolInfo { tool, name, tip, key }
+}
+
+/// What Spray Paint, Pencil and Fill apply: the last terrain, layer or biome picked.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PaintKind {
+    Terrain,
+    Layer,
+    Biome,
 }
 
 impl ToolChoice {
-    pub const ALL: [(ToolChoice, &'static str, &'static str); 17] = [
-        (ToolChoice::Raise, "Raise", "Raise the terrain (1)"),
-        (ToolChoice::Lower, "Lower", "Lower the terrain (2)"),
-        (ToolChoice::Smooth, "Smooth", "Smooth the terrain (3)"),
-        (ToolChoice::Flatten, "Flatten", "Flatten to the height where the stroke started (4)"),
-        (ToolChoice::SetHeight, "Set height", "Move the terrain towards a fixed height (5)"),
-        (ToolChoice::Roughen, "Roughen", "Add noise to the terrain"),
-        (ToolChoice::Terrace, "Terrace", "Shape the terrain into terraces"),
-        (ToolChoice::Terrain, "Paint terrain", "Paint the selected terrain type (6)"),
-        (ToolChoice::Layer, "Paint layer", "Paint the selected layer (7)"),
-        (ToolChoice::EraseLayer, "Erase layer", "Remove the selected layer (8)"),
-        (ToolChoice::Biome, "Paint biome", "Paint the selected biome (9)"),
-        (ToolChoice::WaterLevel, "Water level", "Set the water level under the brush"),
-        (ToolChoice::Sponge, "Sponge", "Remove water under the brush"),
-        (ToolChoice::Flood, "Flood", "Click to flood a basin up to the water level"),
-        (ToolChoice::Mask, "Paint mask", "Paint the selected painted mask (shift erases)"),
-        (ToolChoice::Tiles, "Add/remove tiles", "Extend the world (shift removes tiles)"),
-        (ToolChoice::Spawn, "Spawn point", "Click to set the spawn point"),
+    /// WorldPainter's tool grid (4 columns), in its order.
+    pub const WORLDPAINTER: [ToolInfo; 10] = [
+        ti(ToolChoice::SprayPaint, "Spray Paint", "Spray paint the selected terrain, layer or biome (Alt+R)", Some(Key::R)),
+        ti(ToolChoice::Pencil, "Pencil", "Draw with the selected terrain, layer or biome, hard-edged (Alt+P)", Some(Key::P)),
+        ti(ToolChoice::Fill, "Fill", "Flood fill an area with the selected paint (Alt+L)", Some(Key::L)),
+        ti(ToolChoice::Flood, "Flood", "Click to raise the water by one block, right-click to lower (Alt+F)", Some(Key::F)),
+        ti(ToolChoice::FloodLava, "Flood Lava", "Click to raise lava by one block, or turn water into lava", None),
+        ti(ToolChoice::Sponge, "Sponge", "Dry up water and lava; right-click resets the water level", None),
+        ti(ToolChoice::Height, "Height", "Raise the terrain; right-click lowers it (Alt+H)", Some(Key::H)),
+        ti(ToolChoice::Flatten, "Flatten", "Flatten to the height where the stroke started (Alt+A)", Some(Key::A)),
+        ti(ToolChoice::Smooth, "Smooth", "Smooth the terrain (Alt+S)", Some(Key::S)),
+        ti(ToolChoice::Spawn, "Spawn", "Click to set the spawn point", None),
     ];
+    pub const EXTRAS: [ToolInfo; 6] = [
+        ti(ToolChoice::SetHeight, "Set height", "Move the terrain towards a fixed height", None),
+        ti(ToolChoice::Roughen, "Roughen", "Add noise to the terrain", None),
+        ti(ToolChoice::Terrace, "Terrace", "Shape the terrain into terraces", None),
+        ti(ToolChoice::WaterLevel, "Water level", "Set the water level; right-click removes water", None),
+        ti(ToolChoice::Mask, "Paint mask", "Paint the selected painted mask; right-click erases", None),
+        ti(ToolChoice::Tiles, "Tiles", "Add tiles to the world; right-click removes them (Ctrl+T)", None),
+    ];
+    pub fn info(self) -> Option<&'static ToolInfo> {
+        Self::WORLDPAINTER.iter().chain(Self::EXTRAS.iter()).find(|t| t.tool == self)
+    }
+    pub fn name(self) -> &'static str {
+        self.info().map(|t| t.name).unwrap_or("No tool")
+    }
     pub fn is_click(self) -> bool {
-        matches!(self, ToolChoice::Flood | ToolChoice::Spawn)
+        matches!(self, ToolChoice::Flood | ToolChoice::FloodLava | ToolChoice::Fill | ToolChoice::Spawn)
+    }
+    pub fn uses_brush(self) -> bool {
+        !matches!(self, ToolChoice::None | ToolChoice::Flood | ToolChoice::FloodLava | ToolChoice::Fill | ToolChoice::Spawn)
+    }
+    pub fn uses_paint(self) -> bool {
+        matches!(self, ToolChoice::SprayPaint | ToolChoice::Pencil | ToolChoice::Fill)
     }
 }
 
@@ -86,17 +123,21 @@ pub struct MeadowApp {
     pub preview: Option<ObjectPreview>,
     pub tool: ToolChoice,
     pub brush: Brush,
+    pub paint_kind: PaintKind,
     pub terrain: u8,
     pub layer: Option<LayerId>,
-    pub layer_value: u8,
     pub biome: u8,
     pub height_level: f32,
     pub water_level: i32,
     pub mask_filter: Option<usize>,
     pub mask_overlay: bool,
     pub paint_mask_layer: Option<LayerId>,
-    pub overlays: Vec<LayerId>,
+    /// Layers whose "show" box is unticked.
+    pub hidden_layers: Vec<LayerId>,
     pub stroke: Stroke,
+    /// The pointer was over the 3D view last frame (keys go to the 3D view).
+    pub hover_3d: bool,
+    last_shortcut_frame: u64,
     pub defs_gen: u64,
     pub dialogs: Dialogs,
     pub export_job: Option<ExportJob>,
@@ -114,7 +155,7 @@ impl MeadowApp {
         let settings = Settings::load();
         let imported = crate::jobs::load_imported_blocks();
         let gpu = cc.wgpu_render_state.clone().map(|rs| {
-            let r = Renderer::new(rs.device.clone(), rs.queue.clone());
+            let r = Renderer::new(&rs.adapter, rs.device.clone(), rs.queue.clone());
             Gpu { rs, r }
         });
         let view3d = gpu.as_ref().map(|g| View3D::new(&g.r));
@@ -130,19 +171,21 @@ impl MeadowApp {
             map: Map2D::new(),
             view3d,
             preview,
-            tool: ToolChoice::Raise,
+            tool: ToolChoice::Height,
             brush: Brush::default(),
+            paint_kind: PaintKind::Terrain,
             terrain: 0,
             layer: Some(LayerId::DECIDUOUS),
-            layer_value: 10,
             biome: 1,
             height_level: 64.0,
             water_level: 62,
             mask_filter: None,
             mask_overlay: false,
             paint_mask_layer: None,
-            overlays: vec![LayerId::DECIDUOUS, LayerId::PINE, LayerId::JUNGLE, LayerId::SWAMP, LayerId::FROST, LayerId::ANNOTATIONS],
+            hidden_layers: Vec::new(),
             stroke: Stroke::default(),
+            hover_3d: false,
+            last_shortcut_frame: u64::MAX,
             defs_gen: 1,
             dialogs: Dialogs::default(),
             export_job: None,
@@ -155,7 +198,17 @@ impl MeadowApp {
             last_title: String::new(),
         };
         if imported > 0 {
-            app.toast(format!("Loaded {imported} imported mod blocks"));
+            app.toast(format!("Loaded {imported} imported blocks and colours"));
+        }
+        // Like WorldPainter's colour scheme: use the real block colours from the user's own
+        // Minecraft installation (checked once; View > Change colour scheme redoes it).
+        if !app.settings.colors_auto_checked {
+            app.settings.colors_auto_checked = true;
+            app.settings.save();
+            if let Some(jar) = meadow_blocks::modjar::find_minecraft_jar() {
+                app.toast(format!("Reading block colours from {}", jar.display()));
+                app.jar_job = Some(JarJob::start(jar, cc.egui_ctx.clone()));
+            }
         }
         // Open a world passed on the command line.
         if let Some(p) = std::env::args().nth(1).map(PathBuf::from)
@@ -244,48 +297,83 @@ impl MeadowApp {
         }
     }
 
-    fn core_tool(&self, erase: bool) -> Option<Tool> {
-        let layer_def = |id: LayerId| self.world.layer(id).cloned();
-        Some(match self.tool {
-            ToolChoice::Raise => Tool::Raise,
-            ToolChoice::Lower => Tool::Lower,
-            ToolChoice::Smooth => Tool::Smooth,
-            ToolChoice::Flatten => Tool::Flatten,
-            ToolChoice::SetHeight => Tool::SetHeight(self.height_level),
-            ToolChoice::Roughen => Tool::Roughen,
-            ToolChoice::Terrace => Tool::Terrace(8.0),
-            ToolChoice::Terrain => Tool::PaintTerrain(self.terrain),
-            ToolChoice::Layer | ToolChoice::EraseLayer => {
-                let d: LayerDef = layer_def(self.layer?)?;
-                if self.tool == ToolChoice::EraseLayer || erase {
-                    Tool::EraseLayer { layer: d.id, bits: d.is_bits(), default: d.default }
-                } else {
-                    Tool::PaintLayer { layer: d.id, value: self.layer_value.min(d.data.max()).max(1), bits: d.is_bits(), default: d.default }
+    /// The paint Spray Paint, Pencil and Fill apply.
+    pub fn current_paint(&self) -> Option<Paint> {
+        Some(match self.paint_kind {
+            PaintKind::Terrain => Paint::Terrain(self.terrain),
+            PaintKind::Biome => Paint::Discrete { layer: LayerId::BIOME, value: self.biome, default: meadow_blocks::BIOME_AUTO },
+            PaintKind::Layer => {
+                let d: LayerDef = self.world.layer(self.layer?)?.clone();
+                match d.kind {
+                    LayerKind::Annotations => Paint::Discrete { layer: d.id, value: 1, default: 0 },
+                    _ => Paint::Layer { layer: d.id, bits: d.is_bits(), default: d.default },
                 }
             }
-            ToolChoice::Biome => {
-                if erase {
-                    Tool::EraseLayer { layer: LayerId::BIOME, bits: false, default: meadow_blocks::BIOME_AUTO }
-                } else {
-                    Tool::PaintBiome(self.biome)
-                }
-            }
-            ToolChoice::WaterLevel => Tool::SetWaterLevel(self.water_level),
-            ToolChoice::Sponge => Tool::Sponge,
-            ToolChoice::Mask => {
-                let l = self.paint_mask_layer?;
-                if erase { Tool::EraseMask(l) } else { Tool::PaintMask(l) }
-            }
-            ToolChoice::Flood | ToolChoice::Tiles | ToolChoice::Spawn => return None,
         })
     }
 
-    fn paint(&mut self, from: (f32, f32), to: (f32, f32), dt: f32, first: bool, erase: bool) {
-        let tool = self.core_tool(erase);
+    pub fn paint_name(&self) -> String {
+        match self.paint_kind {
+            PaintKind::Terrain => self.world.terrain(self.terrain).name.clone(),
+            PaintKind::Biome => meadow_blocks::biomes().by_numeric(self.biome).map(|b| b.name.clone()).unwrap_or_default(),
+            PaintKind::Layer => self.layer.and_then(|l| self.world.layer(l)).map(|l| l.name.clone()).unwrap_or_else(|| "none".into()),
+        }
+    }
+
+    /// Select a paint from the Terrain/Layers/Biomes panels; switch to Spray Paint if the
+    /// current tool doesn't paint.
+    pub fn select_paint(&mut self, kind: PaintKind) {
+        self.paint_kind = kind;
+        if !self.tool.uses_paint() {
+            self.tool = ToolChoice::SprayPaint;
+        }
+    }
+
+    fn core_tool(&self, inverse: bool) -> Option<Tool> {
+        let default_water = self.dim().default_water_level;
+        Some(match self.tool {
+            ToolChoice::None | ToolChoice::Fill | ToolChoice::Flood | ToolChoice::FloodLava | ToolChoice::Spawn | ToolChoice::Tiles => return None,
+            ToolChoice::SprayPaint => Tool::Paint { paint: self.current_paint()?, mode: PaintMode::Spray, remove: inverse },
+            ToolChoice::Pencil => Tool::Paint { paint: self.current_paint()?, mode: PaintMode::Pencil, remove: inverse },
+            ToolChoice::Height => {
+                if inverse {
+                    Tool::Lower
+                } else {
+                    Tool::Raise
+                }
+            }
+            ToolChoice::Flatten => Tool::Flatten,
+            ToolChoice::Smooth => Tool::Smooth,
+            ToolChoice::Sponge => {
+                if inverse {
+                    Tool::ResetWater(default_water)
+                } else {
+                    Tool::Sponge
+                }
+            }
+            ToolChoice::SetHeight => Tool::SetHeight(self.height_level),
+            ToolChoice::Roughen => Tool::Roughen,
+            ToolChoice::Terrace => Tool::Terrace(8.0),
+            ToolChoice::WaterLevel => {
+                if inverse {
+                    Tool::Sponge
+                } else {
+                    Tool::SetWaterLevel(self.water_level)
+                }
+            }
+            ToolChoice::Mask => {
+                let l = self.paint_mask_layer?;
+                if inverse { Tool::EraseMask(l) } else { Tool::PaintMask(l) }
+            }
+        })
+    }
+
+    fn paint(&mut self, from: (f32, f32), to: (f32, f32), dt: f32, first: bool, inverse: bool) {
+        let tool = self.core_tool(inverse);
         let tiles_tool = self.tool == ToolChoice::Tiles;
         if tool.is_none() && !tiles_tool {
-            if matches!(self.tool, ToolChoice::Layer | ToolChoice::EraseLayer) {
-                self.status = "Select a layer to paint in the Layers panel".into();
+            if self.tool.uses_paint() {
+                self.status = "Pick a terrain, layer or biome to paint with".into();
             } else if self.tool == ToolChoice::Mask {
                 self.status = "Create or select a painted mask in the Custom masks panel".into();
             }
@@ -315,7 +403,7 @@ impl MeadowApp {
                 let (x0, y0, x1, y1) = ((x as i32 - r) >> 7, (y as i32 - r) >> 7, (x as i32 + r) >> 7, (y as i32 + r) >> 7);
                 for ty in y0..=y1 {
                     for tx in x0..=x1 {
-                        if erase {
+                        if inverse {
                             dim.remove_tile(tx, ty);
                         } else {
                             dim.ensure_tile(tx, ty, base);
@@ -340,16 +428,32 @@ impl MeadowApp {
         }
     }
 
-    fn click(&mut self, x: i32, y: i32, secondary: bool) {
+    fn click(&mut self, x: i32, y: i32, inverse: bool) {
         match self.tool {
-            ToolChoice::Flood => {
-                let level = self.water_level;
+            ToolChoice::Flood | ToolChoice::FloodLava => {
+                let lava = self.tool == ToolChoice::FloodLava;
                 let d = self.dim_mut();
-                d.begin_op("Flood");
-                let _ = secondary;
-                let n = ops::flood(d, x, y, level, 4_000_000);
+                d.begin_op(if lava { "Flood with lava" } else { "Flood" });
+                let n = ops::flood_step(d, x, y, inverse, lava, 16_000_000);
                 d.end_op();
-                self.status = format!("Flooded {n} columns to level {level}");
+                let level = self.dim().water(x, y).unwrap_or(0);
+                self.status = if n == 0 {
+                    "Nothing to flood here".into()
+                } else {
+                    format!("{} {n} columns; {} level {level}", if inverse { "Lowered" } else { "Flooded" }, if lava { "lava" } else { "water" })
+                };
+                self.world.dirty = true;
+            }
+            ToolChoice::Fill => {
+                let Some(paint) = self.current_paint() else {
+                    self.status = "Pick a terrain, layer or biome to fill with".into();
+                    return;
+                };
+                let d = self.dim_mut();
+                d.begin_op("Fill");
+                let n = ops::fill_paint(d, x, y, &paint, inverse, 16_000_000);
+                d.end_op();
+                self.status = format!("Filled {n} columns");
                 self.world.dirty = true;
             }
             ToolChoice::Spawn => {
@@ -372,68 +476,156 @@ impl MeadowApp {
         }
     }
 
+    /// WorldPainter's keyboard shortcuts (plus a few Meadow extras that don't clash).
     fn shortcuts(&mut self, ctx: &egui::Context) {
+        // egui may run more than one pass per frame; handle keys once.
+        let frame = ctx.cumulative_frame_nr();
+        if frame == self.last_shortcut_frame {
+            return;
+        }
+        self.last_shortcut_frame = frame;
         let typing = ctx.egui_wants_keyboard_input();
         let sc = |m: Modifiers, k: Key| KeyboardShortcut::new(m, k);
         let fire = |s: KeyboardShortcut| ctx.input_mut(|i| i.consume_shortcut(&s));
-        if fire(sc(Modifiers::COMMAND, Key::Z)) {
-            self.undo();
-        }
-        if fire(sc(Modifiers::COMMAND, Key::Y)) || fire(sc(Modifiers::COMMAND | Modifiers::SHIFT, Key::Z)) {
-            self.redo();
-        }
-        if fire(sc(Modifiers::COMMAND, Key::S)) {
+        let cmd = Modifiers::COMMAND;
+        let cmd_shift = Modifiers::COMMAND | Modifiers::SHIFT;
+        let ppp = ctx.pixels_per_point();
+        // Shift variants first: egui's matching ignores Shift when it isn't asked for.
+        if fire(sc(cmd_shift, Key::S)) {
+            if let Some(p) = rfd::FileDialog::new().add_filter("Meadow world", &["meadow"]).set_file_name(format!("{}.meadow", self.world.name)).save_file() {
+                self.save_world(Some(p));
+            }
+        } else if fire(sc(cmd, Key::S)) {
             self.save_world(None);
         }
-        if fire(sc(Modifiers::COMMAND, Key::O)) {
+        if fire(sc(cmd_shift, Key::Z)) || fire(sc(cmd, Key::Y)) {
+            self.redo();
+        } else if fire(sc(cmd, Key::Z)) {
+            self.undo();
+        }
+        if fire(sc(cmd, Key::O)) {
             self.dialogs.open_file = true;
         }
-        if fire(sc(Modifiers::COMMAND, Key::N)) {
+        if fire(sc(cmd, Key::N)) {
             self.dialogs.new_world.open = true;
         }
-        if fire(sc(Modifiers::COMMAND, Key::E)) {
+        if fire(sc(cmd, Key::E)) {
             self.dialogs.export.open = true;
+        }
+        if fire(sc(cmd, Key::G)) {
+            self.dialogs.fill.open = true;
+        }
+        if fire(sc(cmd, Key::T)) {
+            self.tool = ToolChoice::Tiles;
+            self.status = "Add tiles by painting; right-click removes them".into();
+        }
+        if fire(sc(cmd, Key::P)) {
+            self.dialogs.world_settings.open_for(&self.world);
+        }
+        if fire(sc(cmd, Key::V)) {
+            self.dialogs.configure_view = true;
+        }
+        for (key, kind) in [(Key::U, DimensionKind::Overworld), (Key::H, DimensionKind::Nether), (Key::D, DimensionKind::End)] {
+            if fire(sc(cmd, key)) {
+                if self.world.dimension(kind).is_some() {
+                    self.dim = kind;
+                    self.frame_map = true;
+                } else {
+                    self.status = format!("This world has no {}; add it from the Dimension menu", kind.name());
+                }
+            }
+        }
+        if fire(sc(cmd, Key::Num3)) {
+            self.view_mode = if self.view_mode == ViewMode::Map { ViewMode::View3D } else { ViewMode::Map };
+        }
+        if fire(sc(cmd, Key::Equals)) || fire(sc(cmd, Key::Plus)) {
+            self.map.zoom_keyboard(1, ppp);
+        }
+        if fire(sc(cmd, Key::Minus)) {
+            self.map.zoom_keyboard(-1, ppp);
+        }
+        if fire(sc(cmd, Key::Num0)) {
+            let z = self.map.zoom;
+            self.map.zoom_keyboard(-z, ppp);
+        }
+        // Alt + letter selects a tool, as in WorldPainter's tool palette.
+        for info in ToolChoice::WORLDPAINTER.iter() {
+            if let Some(k) = info.key
+                && fire(sc(Modifiers::ALT, k))
+            {
+                self.tool = info.tool;
+                self.status = format!("{} tool", self.tool.name());
+            }
         }
         if typing {
             return;
         }
-        ctx.input(|i| {
-            let nums = [Key::Num1, Key::Num2, Key::Num3, Key::Num4, Key::Num5, Key::Num6, Key::Num7, Key::Num8, Key::Num9];
-            let tools = [
-                ToolChoice::Raise,
-                ToolChoice::Lower,
-                ToolChoice::Smooth,
-                ToolChoice::Flatten,
-                ToolChoice::SetHeight,
-                ToolChoice::Terrain,
-                ToolChoice::Layer,
-                ToolChoice::EraseLayer,
-                ToolChoice::Biome,
+        let in_3d = self.view_mode == ViewMode::View3D || (self.view_mode == ViewMode::Split && self.hover_3d);
+        let pressed = ctx.input(|i| {
+            let m = i.modifiers;
+            if m.alt || m.ctrl || m.command || m.mac_cmd {
+                return Vec::new();
+            }
+            // "+" needs Shift on most layouts, so Shift is allowed for the zoom keys only.
+            let zoom_keys = [Key::Minus, Key::Plus, Key::Equals];
+            let keys = [
+                Key::Num1, Key::Num2, Key::Num3, Key::Num4, Key::Num5, Key::Num6, Key::Num7, Key::Num8, Key::Num9, Key::Num0,
+                Key::R, Key::L, Key::Escape, Key::OpenBracket, Key::CloseBracket, Key::Tab, Key::F, Key::F1, Key::Minus, Key::Plus, Key::Equals,
             ];
-            if !i.modifiers.any() {
-                for (k, t) in nums.iter().zip(tools) {
-                    if i.key_pressed(*k) {
-                        self.tool = t;
+            keys.into_iter().filter(|k| i.key_pressed(*k) && (!m.shift || zoom_keys.contains(k))).collect::<Vec<Key>>()
+        });
+        for k in pressed {
+            match k {
+                // 3D view: 0 resets the camera (WorldPainter's 3D view).
+                Key::Num0 if in_3d => {
+                    if let Some(v) = &mut self.view3d {
+                        v.reset_view();
                     }
                 }
-                if i.key_pressed(Key::OpenBracket) {
-                    self.brush.radius = (self.brush.radius / 1.15).max(0.5);
+                // WorldPainter: 1 = "10 %" ... 9 = "90 %", 0 = 100 % intensity (its exact values).
+                Key::Num1 | Key::Num2 | Key::Num3 | Key::Num4 | Key::Num5 | Key::Num6 | Key::Num7 | Key::Num8 | Key::Num9 | Key::Num0 => {
+                    const LEVELS: [f32; 10] = [2.0, 16.0, 23.0, 37.0, 51.0, 58.0, 65.0, 79.0, 86.0, 100.0];
+                    let idx = match k {
+                        Key::Num1 => 0, Key::Num2 => 1, Key::Num3 => 2, Key::Num4 => 3, Key::Num5 => 4,
+                        Key::Num6 => 5, Key::Num7 => 6, Key::Num8 => 7, Key::Num9 => 8, _ => 9,
+                    };
+                    self.brush.intensity = LEVELS[idx] / 100.0;
+                    self.status = format!("Intensity {}%", if idx == 9 { 100 } else { (idx + 1) * 10 });
                 }
-                if i.key_pressed(Key::CloseBracket) {
-                    self.brush.radius = (self.brush.radius * 1.15).min(500.0);
+                Key::R | Key::L => {
+                    let clockwise = k == Key::R;
+                    if in_3d {
+                        if let Some(v) = &mut self.view3d {
+                            v.rotate_90(clockwise);
+                        }
+                    } else {
+                        self.settings.light = if clockwise { self.settings.light.right() } else { self.settings.light.left() };
+                        self.status = format!("Light from the {}", self.settings.light.name());
+                    }
                 }
-                if i.key_pressed(Key::Tab) {
+                Key::Minus | Key::Plus | Key::Equals if in_3d => {
+                    if let Some(v) = &mut self.view3d {
+                        v.zoom_step(k != Key::Minus);
+                    }
+                }
+                Key::Escape => {
+                    self.tool = ToolChoice::None;
+                    self.status = "No tool selected".into();
+                }
+                Key::OpenBracket => self.brush.radius = (self.brush.radius / 1.1).floor().max(0.0),
+                Key::CloseBracket => self.brush.radius = (self.brush.radius * 1.1).ceil().min(crate::map2d::MAX_RADIUS),
+                Key::Tab => {
                     self.view_mode = match self.view_mode {
                         ViewMode::Map => ViewMode::View3D,
                         ViewMode::View3D => ViewMode::Split,
                         ViewMode::Split => ViewMode::Map,
                     };
                 }
-                if i.key_pressed(Key::F) && self.view_mode == ViewMode::Map {
-                    self.frame_map = true;
-                }
+                Key::F if !in_3d => self.frame_map = true,
+                Key::F1 => self.dialogs.help = true,
+                _ => {}
             }
-        });
+        }
     }
 
     fn menu_bar(&mut self, ui: &mut egui::Ui) {
@@ -539,13 +731,46 @@ impl MeadowApp {
                     }
                     ui.close();
                 }
-                ui.checkbox(&mut self.settings.show_grid, "Tile and chunk grid");
-                ui.checkbox(&mut self.settings.show_layer_overlays, "Layer overlays");
+                ui.checkbox(&mut self.settings.show_grid, "Grid");
+                ui.checkbox(&mut self.settings.contours, "Contours");
+                ui.checkbox(&mut self.settings.show_layer_overlays, "Overlays (layers)");
+                ui.checkbox(&mut self.settings.show_biomes, "Show biomes");
                 ui.checkbox(&mut self.mask_overlay, "Show active mask");
-                ui.horizontal(|ui| {
-                    ui.label("Contours every");
-                    ui.add(egui::DragValue::new(&mut self.settings.contour_interval).range(0..=256).suffix(" blocks"));
+                if ui.add(egui::Button::new("Rotate light anticlockwise").shortcut_text("L")).clicked() {
+                    self.settings.light = self.settings.light.left();
+                }
+                if ui.add(egui::Button::new("Rotate light clockwise").shortcut_text("R")).clicked() {
+                    self.settings.light = self.settings.light.right();
+                }
+                ui.menu_button("Change colour scheme", |ui| {
+                    let current = self.settings.colors_from_jar.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| "built-in colours".into());
+                    ui.label(egui::RichText::new(format!("Now: {current}")).small().weak());
+                    if ui.button("Colours from installed Minecraft").clicked() {
+                        match meadow_blocks::modjar::find_minecraft_jar() {
+                            Some(jar) => self.jar_job = Some(JarJob::start(jar, ui.ctx().clone())),
+                            None => self.error("Couldn't find a Minecraft installation (.minecraft/versions). Use \"Colours from a jar…\" to pick the client jar."),
+                        }
+                        ui.close();
+                    }
+                    if ui.button("Colours from a jar…").clicked() {
+                        if let Some(p) = rfd::FileDialog::new().add_filter("Minecraft or mod jar", &["jar", "zip"]).pick_file() {
+                            self.jar_job = Some(JarJob::start(p, ui.ctx().clone()));
+                        }
+                        ui.close();
+                    }
                 });
+                if ui.add(egui::Button::new("Configure view…").shortcut_text("Ctrl+V")).clicked() {
+                    self.dialogs.configure_view = true;
+                    ui.close();
+                }
+                if ui.button("Move to spawn").clicked() {
+                    self.map.center = (self.world.spawn.0 as f64, self.world.spawn.1 as f64);
+                    ui.close();
+                }
+                if ui.button("Move to origin").clicked() {
+                    self.map.center = (0.0, 0.0);
+                    ui.close();
+                }
                 ui.separator();
                 ui.menu_button("Panels", |ui| {
                     for p in &mut self.settings.panels {
@@ -630,57 +855,62 @@ impl MeadowApp {
         });
     }
 
+    /// The column under the cursor in the active view.
+    pub fn hover_column(&self) -> Option<(i32, i32)> {
+        match self.view_mode {
+            ViewMode::View3D => self.view3d.as_ref().and_then(|v| v.hover).map(|(x, z, _)| (x, z)),
+            ViewMode::Split if self.hover_3d => self.view3d.as_ref().and_then(|v| v.hover).map(|(x, z, _)| (x, z)),
+            _ => self.map.hover,
+        }
+    }
+
+    /// WorldPainter's status bar: location, height, slope, material, fluid, biome, radius, zoom.
     fn status_bar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            let hover = match self.view_mode {
-                ViewMode::View3D => self.view3d.as_ref().and_then(|v| v.hover).map(|(x, z, _)| (x, z)),
-                _ => self.map.hover,
-            };
-            if let Some((x, y)) = hover {
-                let d = self.dim();
-                match d.height(x, y) {
-                    Some(h) => {
-                        let t = self.world.terrain(d.terrain(x, y).unwrap_or(0)).name.clone();
-                        let w = d.water(x, y).unwrap_or(0);
-                        let mut s = format!("x {x}  z {y}  height {h:.1}  {t}  slope {:.0}°", d.slope(x, y));
-                        if w > h.round() as i32 {
-                            s += &format!("  water {w} (depth {})", w - h.round() as i32);
+            let d = self.dim();
+            let mut fields: Vec<String> = Vec::new();
+            match self.hover_column() {
+                Some((x, y)) => {
+                    fields.push(format!("Location: {x}, {y}"));
+                    match d.height(x, y) {
+                        Some(h) => {
+                            let ih = (h + 0.5).floor() as i32;
+                            fields.push(format!("Height: {ih} of {}", d.limits.max_y - 1));
+                            fields.push(format!("Slope: {:.0}°", d.slope(x, y)));
+                            fields.push(format!("Material: {}", self.world.terrain(d.terrain(x, y).unwrap_or(0)).name));
+                            let w = d.water(x, y).unwrap_or(i32::MIN);
+                            if w > ih {
+                                let lava = d.layer_value(LayerId::LAVA, 0, x, y) != 0;
+                                fields.push(format!("{} level: {w} (depth {})", if lava { "Lava" } else { "Fluid" }, w - ih));
+                            }
+                            let b = d.layer_value(LayerId::BIOME, meadow_blocks::BIOME_AUTO, x, y);
+                            let biomes = meadow_blocks::biomes();
+                            if b != meadow_blocks::BIOME_AUTO {
+                                if let Some(bi) = biomes.by_numeric(b) {
+                                    fields.push(format!("Biome: {} (ID {b})", bi.name));
+                                }
+                            } else {
+                                let auto = self.world.terrain(d.terrain(x, y).unwrap_or(0)).auto_biome;
+                                if let Some(bi) = biomes.by_numeric(auto) {
+                                    fields.push(format!("Auto biome: {} (ID {auto})", bi.name));
+                                }
+                            }
                         }
-                        let b = d.layer_value(LayerId::BIOME, meadow_blocks::BIOME_AUTO, x, y);
-                        if b != meadow_blocks::BIOME_AUTO
-                            && let Some(bi) = meadow_blocks::biomes().by_numeric(b)
-                        {
-                            s += &format!("  biome {}", bi.name);
-                        }
-                        let layers: Vec<String> = self
-                            .world
-                            .layers
-                            .iter()
-                            .filter(|l| l.id != LayerId::BIOME)
-                            .filter_map(|l| {
-                                let v = d.layer_value(l.id, l.default, x, y);
-                                (v != l.default).then(|| if l.is_bits() { l.name.clone() } else { format!("{} {v}", l.name) })
-                            })
-                            .collect();
-                        if !layers.is_empty() {
-                            s += &format!("  [{}]", layers.join(", "));
-                        }
-                        ui.monospace(s);
-                    }
-                    None => {
-                        ui.monospace(format!("x {x}  z {y}  (no tile)"));
+                        None => fields.push("No tile".into()),
                     }
                 }
+                None => fields.push("Location: -".into()),
+            }
+            fields.push(format!("Radius: {}", self.brush.radius.round() as i32));
+            fields.push(format!("Zoom: {}%", self.map.zoom_percent()));
+            for (k, f) in fields.iter().enumerate() {
+                if k > 0 {
+                    ui.separator();
+                }
+                ui.label(f);
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let d = self.dim();
-                ui.label(format!(
-                    "{} tiles · y {}..{} · {}",
-                    d.tile_count(),
-                    d.limits.min_y,
-                    d.limits.max_y,
-                    self.world.export.version.label()
-                ));
+                ui.label(RichText::new(self.world.export.version.label()).weak());
                 if !self.status.is_empty() {
                     ui.separator();
                     ui.label(&self.status);
@@ -706,40 +936,64 @@ impl MeadowApp {
         }
     }
 
+    /// Layers drawn on the 2D map, in drawing order (WorldPainter draws every layer unless its
+    /// "show" box is unticked).
+    pub fn visible_layers(&self) -> Vec<LayerId> {
+        if !self.settings.show_layer_overlays {
+            return Vec::new();
+        }
+        let mut v: Vec<&LayerDef> = self
+            .world
+            .layers
+            .iter()
+            .filter(|l| !self.hidden_layers.contains(&l.id))
+            .filter(|l| l.id != LayerId::BIOME || self.settings.show_biomes)
+            .collect();
+        v.sort_by_key(|l| l.priority);
+        v.into_iter().map(|l| l.id).collect()
+    }
+
     fn map_view(&mut self, ui: &mut egui::Ui) {
         let style = MapStyle {
+            light: self.settings.light,
             hillshade: self.settings.hillshade,
-            contour: self.settings.contour_interval,
-            overlays: if self.settings.show_layer_overlays { self.overlays.clone() } else { Vec::new() },
+            contours: self.settings.contours,
+            contour_spacing: self.settings.contour_spacing,
+            layers: self.visible_layers(),
             mask: if self.mask_overlay { self.mask_filter.and_then(|i| self.world.masks.get(i).cloned()) } else { None },
+            background: self.settings.background,
             defs_gen: self.defs_gen,
+            colors_gen: meadow_blocks::registry().read().generation(),
         };
+        let ppp = ui.ctx().pixels_per_point();
         if self.frame_map {
             let size = ui.available_size();
             let kind = self.dim;
             if let Some(d) = self.world.dimension(kind) {
-                self.map.frame_world(d, size);
+                self.map.frame_world(d, size, ppp);
             }
             self.frame_map = false;
         }
         let kind = self.dim;
-        let world = &self.world;
-        let Some(dim) = world.dimension(kind) else { return };
+        let Some(dim) = self.world.dimension(kind) else { return };
         let action = self.map.ui(
             ui,
-            world,
-            dim,
-            &style,
-            self.brush.radius,
-            self.brush.shape == BrushShape::Square,
-            self.settings.show_grid,
-            self.tool.is_click(),
+            MapUi {
+                world: &self.world,
+                dim,
+                style: &style,
+                brush: &mut self.brush,
+                show_grid: self.settings.show_grid,
+                grid_size: self.settings.grid_size,
+                click_tool: self.tool.is_click(),
+                tool_active: self.tool != ToolChoice::None,
+                brush_tool: self.tool.uses_brush(),
+            },
         );
-        let erase = ui.input(|i| i.modifiers.shift);
         match action {
-            MapAction::Paint { from, to, dt, first } => self.paint(from, to, dt, first, erase),
+            MapAction::Paint { from, to, dt, first, inverse } => self.paint(from, to, dt, first, inverse),
             MapAction::EndPaint => self.end_paint(),
-            MapAction::Click { x, y, secondary } => self.click(x, y, secondary),
+            MapAction::Click { x, y, inverse } => self.click(x, y, inverse),
             MapAction::None => {}
         }
     }
@@ -749,8 +1003,9 @@ impl MeadowApp {
             ui.centered_and_justified(|ui| ui.label("3D view needs a GPU (wgpu) renderer"));
             return;
         };
-        let editing = self.map.painting;
+        let editing = self.map.painting.is_some();
         v.ui(ui, &gpu.rs, &gpu.r, &self.world, self.dim, self.defs_gen, &self.settings, editing);
+        self.hover_3d = v.hovered;
     }
 
     fn side_panels(&mut self, ui: &mut egui::Ui) {
@@ -874,7 +1129,14 @@ impl MeadowApp {
                     crate::jobs::save_imported_blocks(&blocks);
                     let rep = meadow_blocks::modjar::import_into_registry(blocks, &[]);
                     let ns: Vec<String> = rep.namespaces.iter().map(|(n, c)| format!("{n}: {c}")).collect();
-                    self.toast(format!("Imported {} blocks from {} ({})", rep.blocks, path.display(), ns.join(", ")));
+                    let vanilla = rep.namespaces.iter().all(|(n, _)| n == "minecraft");
+                    if vanilla {
+                        self.toast(format!("Block colours now come from {}", path.display()));
+                        self.settings.colors_from_jar = Some(path.clone());
+                    } else {
+                        self.toast(format!("Imported {} blocks from {} ({})", rep.blocks, path.display(), ns.join(", ")));
+                    }
+                    self.map.clear_cache();
                     self.settings.imported_jars.push(path);
                     self.settings.save();
                     self.defs_changed();
@@ -886,7 +1148,7 @@ impl MeadowApp {
 
     fn autosave(&mut self) {
         let mins = self.settings.autosave_minutes;
-        if mins == 0 || !self.world.dirty || self.map.painting || self.last_autosave.elapsed().as_secs() < mins as u64 * 60 {
+        if mins == 0 || !self.world.dirty || self.map.painting.is_some() || self.last_autosave.elapsed().as_secs() < mins as u64 * 60 {
             return;
         }
         self.last_autosave = Instant::now();
