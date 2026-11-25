@@ -125,6 +125,11 @@ impl Dimension {
         }
     }
 
+    /// The theme used for automatic terrain (WorldPainter's default theme for this dimension).
+    pub fn theme(&self) -> crate::theme::Theme {
+        crate::theme::Theme::default_for(self.default_terrain, self.limits.min_y, self.limits.max_y, self.default_water_level)
+    }
+
     // ---- tiles ------------------------------------------------------------------------------
 
     pub fn tile_count(&self) -> usize {

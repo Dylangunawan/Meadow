@@ -78,11 +78,21 @@ pub struct Settings {
     pub fog: bool,
     pub show_plants_3d: bool,
     pub fly_speed: f32,
-    // 2D view
+    // 2D view (WorldPainter defaults)
+    /// Multiplier on WorldPainter's hill shading (1 = identical).
     pub hillshade: f32,
-    pub contour_interval: i32,
+    pub contours: bool,
+    pub contour_spacing: i32,
     pub show_grid: bool,
+    pub grid_size: i32,
+    pub background: [u8; 3],
+    pub light: crate::map2d::LightOrigin,
+    pub show_biomes: bool,
     pub show_layer_overlays: bool,
+    /// Path of the Minecraft jar the block colours were last imported from.
+    pub colors_from_jar: Option<PathBuf>,
+    /// Whether Meadow already offered to import colours from an installed Minecraft.
+    pub colors_auto_checked: bool,
     // Misc
     pub recent_files: Vec<PathBuf>,
     pub recent_scripts: Vec<PathBuf>,
@@ -119,9 +129,16 @@ impl Default for Settings {
             show_plants_3d: true,
             fly_speed: 60.0,
             hillshade: 1.0,
-            contour_interval: 0,
+            contours: true,
+            contour_spacing: 10,
             show_grid: true,
+            grid_size: 128,
+            background: DEFAULT_BACKGROUND,
+            light: crate::map2d::LightOrigin::NorthWest,
+            show_biomes: false,
             show_layer_overlays: true,
+            colors_from_jar: None,
+            colors_auto_checked: false,
             recent_files: Vec::new(),
             recent_scripts: Vec::new(),
             minecraft_saves: default_saves_dir(),
@@ -130,6 +147,9 @@ impl Default for Settings {
         }
     }
 }
+
+/// WorldPainter's default map background (light cyan, also used for Void).
+pub const DEFAULT_BACKGROUND: [u8; 3] = [0xC0, 0xFF, 0xFF];
 
 pub fn config_dir() -> Option<PathBuf> {
     directories::ProjectDirs::from("net", "Meadow", "Meadow").map(|d| d.config_dir().to_owned())
@@ -183,6 +203,8 @@ impl Settings {
     /// Apply scale, theme, colours and fonts to the egui context.
     pub fn apply(&self, ctx: &egui::Context) {
         ctx.set_zoom_factor(self.ui_scale.clamp(0.5, 3.0));
+        // Ctrl + / - / 0 zoom the map (WorldPainter), not the whole UI.
+        ctx.options_mut(|o| o.zoom_with_keyboard = false);
         ctx.set_theme(match self.theme {
             ThemeChoice::Dark => egui::ThemePreference::Dark,
             ThemeChoice::Light => egui::ThemePreference::Light,

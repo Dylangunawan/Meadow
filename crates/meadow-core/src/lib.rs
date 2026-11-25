@@ -10,6 +10,7 @@ pub mod noise;
 pub mod objects;
 pub mod ops;
 pub mod terrain;
+pub mod theme;
 pub mod tile;
 pub mod trees;
 pub mod world;

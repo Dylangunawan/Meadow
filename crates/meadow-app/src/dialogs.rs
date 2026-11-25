@@ -29,6 +29,8 @@ pub struct Dialogs {
     pub about: bool,
     pub help: bool,
     pub settings_open: bool,
+    /// WorldPainter's "Configure view" (Ctrl+V).
+    pub configure_view: bool,
     pub new_world: NewWorldDialog,
     pub new_dimension: Option<DimensionKind>,
     pub import: ImportDialog,
@@ -501,6 +503,7 @@ impl MeadowApp {
         self.dlg_terrain_editor(ctx);
         self.dlg_world_settings(ctx);
         self.dlg_settings(ctx);
+        self.dlg_configure_view(ctx);
         self.dlg_about(ctx);
         if let Some(j) = &self.jar_job {
             egui::Window::new("Importing blocks").collapsible(false).show(ctx, |ui| {
@@ -539,21 +542,28 @@ impl MeadowApp {
         });
         self.dialogs.about = open;
         let mut help = self.dialogs.help;
-        egui::Window::new("Keyboard & mouse").open(&mut help).show(ctx, |ui| {
+        egui::Window::new("Keyboard & mouse (WorldPainter controls)").open(&mut help).show(ctx, |ui| {
             egui::Grid::new("keys").striped(true).show(ui, |ui| {
                 for (k, v) in [
-                    ("Left drag", "Use tool (2D) / orbit (3D)"),
-                    ("Shift + drag", "Erase / inverse tool"),
-                    ("Right / middle drag, Space + drag", "Pan"),
-                    ("Wheel", "Zoom"),
-                    ("W A S D / Q E", "Fly (3D view)"),
-                    ("Double click", "Focus point (3D view)"),
-                    ("1 – 9", "Select tool"),
-                    ("[ and ]", "Brush size"),
-                    ("Tab", "Cycle 2D / 3D / split"),
-                    ("F", "Frame world"),
-                    ("Ctrl+Z / Ctrl+Y", "Undo / redo"),
-                    ("Ctrl+S / Ctrl+O / Ctrl+N / Ctrl+E", "Save / open / new / export"),
+                    ("Left button", "Use the tool"),
+                    ("Right button, or Alt + left", "Opposite of the tool (lower, remove paint, lower water…)"),
+                    ("Middle drag, or Space + drag", "Pan the map"),
+                    ("Mouse wheel", "Brush size (Shift: by one)"),
+                    ("Ctrl + wheel, Ctrl + / − / 0", "Zoom in, out, 100 %"),
+                    ("Alt + wheel", "Rotate the brush"),
+                    ("1 … 9, 0", "Brush intensity 10 % … 90 %, 100 %"),
+                    ("Alt + R / P / L", "Spray Paint / Pencil / Fill"),
+                    ("Alt + F / H / A / S", "Flood / Height / Flatten / Smooth"),
+                    ("R / L", "Rotate the map's light (3D view: rotate the view)"),
+                    ("Esc", "Leave the current tool"),
+                    ("Ctrl + G / T / P / V", "Global operations / Add tiles / Dimension properties / Configure view"),
+                    ("Ctrl + U / H / D", "View Surface / Nether / End"),
+                    ("Ctrl + 3", "3D view"),
+                    ("3D view: L / R, + / − / 0", "Rotate 90°, zoom, reset"),
+                    ("3D view: drag, right-drag, WASD/QE", "Orbit, pan, fly (Meadow extras)"),
+                    ("Ctrl + Z / Y", "Undo / redo"),
+                    ("Ctrl + N / O / S / Shift+S / E", "New / open / save / save as / export"),
+                    ("[ and ], Tab, F", "Brush size, cycle 2D/3D/split, frame world (Meadow extras)"),
                 ] {
                     ui.label(RichText::new(k).strong());
                     ui.label(v);
@@ -1844,6 +1854,56 @@ impl MeadowApp {
         self.dialogs.world_settings.open = open;
     }
 
+    /// WorldPainter's Configure View dialog.
+    fn dlg_configure_view(&mut self, ctx: &egui::Context) {
+        let mut open = self.dialogs.configure_view;
+        if !open {
+            return;
+        }
+        egui::Window::new("Configure view").open(&mut open).collapsible(false).show(ctx, |ui| {
+            let s = &mut self.settings;
+            egui::Grid::new("cfg_view").num_columns(2).spacing([10.0, 6.0]).show(ui, |ui| {
+                ui.checkbox(&mut s.show_grid, "Grid");
+                ui.horizontal(|ui| {
+                    ui.label("size");
+                    ui.add(egui::DragValue::new(&mut s.grid_size).range(4..=4096).suffix(" blocks"));
+                });
+                ui.end_row();
+                ui.checkbox(&mut s.contours, "Contour lines");
+                ui.horizontal(|ui| {
+                    ui.label("separation");
+                    ui.add(egui::DragValue::new(&mut s.contour_spacing).range(1..=256).suffix(" blocks"));
+                });
+                ui.end_row();
+                ui.label("Light from");
+                egui::ComboBox::from_id_salt("light").selected_text(s.light.name()).show_ui(ui, |ui| {
+                    for l in crate::map2d::LightOrigin::ALL {
+                        ui.selectable_value(&mut s.light, l, l.name());
+                    }
+                });
+                ui.end_row();
+                ui.label("Hill shading");
+                ui.add(egui::Slider::new(&mut s.hillshade, 0.0..=3.0).text("× WorldPainter"));
+                ui.end_row();
+                ui.label("Background");
+                ui.horizontal(|ui| {
+                    egui::color_picker::color_edit_button_srgb(ui, &mut s.background);
+                    if ui.small_button("default").clicked() {
+                        s.background = crate::settings::DEFAULT_BACKGROUND;
+                    }
+                });
+                ui.end_row();
+                ui.checkbox(&mut s.show_layer_overlays, "Overlays (layers)");
+                ui.checkbox(&mut s.show_biomes, "Show biomes");
+                ui.end_row();
+            });
+        });
+        if !open {
+            self.settings.save();
+        }
+        self.dialogs.configure_view = open;
+    }
+
     fn dlg_settings(&mut self, ctx: &egui::Context) {
         let mut open = self.dialogs.settings_open;
         let mut changed = false;
@@ -1923,17 +1983,7 @@ impl MeadowApp {
                 ui.end_row();
             });
             ui.heading("2D map");
-            egui::Grid::new("pref_2d").num_columns(2).show(ui, |ui| {
-                ui.label("Hill shading");
-                ui.add(egui::Slider::new(&mut s.hillshade, 0.0..=3.0));
-                ui.end_row();
-                ui.label("Contours every");
-                ui.add(egui::DragValue::new(&mut s.contour_interval).range(0..=256).suffix(" blocks (0 = off)"));
-                ui.end_row();
-                ui.label("");
-                ui.checkbox(&mut s.show_grid, "Grid");
-                ui.end_row();
-            });
+            ui.label(RichText::new("Grid, contours, background and light are under View › Configure view (Ctrl+V).").small().weak());
             ui.heading("Files");
             egui::Grid::new("pref_files").num_columns(2).show(ui, |ui| {
                 ui.label("Minecraft saves");
